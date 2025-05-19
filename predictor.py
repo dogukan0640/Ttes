@@ -1,9 +1,10 @@
 import pandas as pd
 import joblib
 import os
+from signal_generator import generate_signal
 
-CSV_FILE = "predictions.csv"
 MODEL_FILE = "model.pkl"
+CSV_FILE = "predictions.csv"
 
 FEATURES = [
     "ob", "fvg", "eqh", "ema_trend",
@@ -17,25 +18,20 @@ def load_model_and_predict():
         return None
 
     if not os.path.exists(CSV_FILE):
-        print("Tahmin için veri bulunamadı.")
+        print("Veri dosyası bulunamadı.")
         return None
 
+    model = joblib.load(MODEL_FILE)
     df = pd.read_csv(CSV_FILE)
-    df = df.dropna()
+    df = df.dropna(subset=FEATURES)
 
     if df.empty:
         print("Tahmin için yeterli veri yok.")
         return None
 
     X = df[FEATURES]
-    model = joblib.load(MODEL_FILE)
-    df["prediction"] = model.predict(X)
+    predictions = model.predict(X)
+    df['prediction'] = predictions
 
-    result = df.iloc[-1]
-    signal = "LONG" if result["prediction"] == 1 else "SHORT"
-    confidence = model.predict_proba([result[FEATURES]])[0].max()
-
-    if confidence >= 0.6:
-        return f"Yeni sinyal: {signal} | Güven: {round(confidence * 100, 2)}%"
-    else:
-        return None
+    signal = generate_signal(df)
+    return signal
