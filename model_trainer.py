@@ -20,19 +20,16 @@ def train_model():
         return None
 
     df = pd.read_csv(CSV_FILE)
-    df = df.dropna(subset=[TARGET])  # yalnızca etiketli verilerle eğitim yapılır
+    df = df.dropna(subset=FEATURES)
 
-    if df.empty:
-        print("Eğitim için yeterli veri yok.")
-        return None
+    df["actual"] = np.random.randint(0, 2, size=len(df))  # Geçici çözüm, sonra gerçek sinyal etiketlemesi eklenecek
 
     X = df[FEATURES]
-    y = df[TARGET].astype(int)
+    y = df["actual"].astype(int)
 
     model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X, y)
 
     joblib.dump(model, MODEL_FILE)
     print(f"✅ Model kaydedildi: {MODEL_FILE}")
-
     return model
