@@ -20,7 +20,7 @@ def train_model():
         return None
 
     df = pd.read_csv(CSV_FILE)
-    df = df.dropna(subset=[TARGET])
+    df = df.dropna(subset=[TARGET])  # yalnızca etiketli verilerle eğitim yapılır
 
     if df.empty:
         print("Eğitim için yeterli veri yok.")
@@ -34,4 +34,5 @@ def train_model():
 
     joblib.dump(model, MODEL_FILE)
     print(f"✅ Model kaydedildi: {MODEL_FILE}")
+
     return model
