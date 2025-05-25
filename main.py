@@ -13,9 +13,9 @@ SCAN_INTERVAL_SEC = 900
 LOOKBACK_CANDLES = 120
 TIMEFRAME = '15m'
 
-def send_sync_message(msg):
+async def send(msg):
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, bot.send_message, TELEGRAM_CHAT_ID, msg)
+    await loop.run_in_executor(None, bot.send_message, TELEGRAM_CHAT_ID, msg)
 
 def pct(x, y): return (x - y) / y if y else 0.0
 
@@ -57,52 +57,51 @@ async def fetch_ohlcv(exchange, symbol):
         return pd.DataFrame(ohlcv, columns=['ts','open','high','low','close','vol'])
     except: return None
 
-async def fetch_binance_fr_oi(session, symbol):
+async def fetch_fr_oi(session, exchange_name, symbol):
     try:
-        fr_url = f'https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}&limit=1'
-        oi_url = f'https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol}'
-        fr_data = await (await session.get(fr_url)).json()
-        oi_data = await (await session.get(oi_url)).json()
-        return float(fr_data[-1]['fundingRate']), float(oi_data['openInterest'])
+        if exchange_name == 'binance':
+            fr_url = f'https://fapi.binance.com/fapi/v1/fundingRate?symbol={symbol}&limit=1'
+            oi_url = f'https://fapi.binance.com/fapi/v1/openInterest?symbol={symbol}'
+            fr_data = await (await session.get(fr_url)).json()
+            oi_data = await (await session.get(oi_url)).json()
+            return float(fr_data[-1]['fundingRate']), float(oi_data['openInterest'])
+        else:
+            q = symbol.replace('/', '_')
+            js = await (await session.get(f'https://contract.mexc.com/api/v1/contract/ticker?symbol={q}')).json()
+            if js.get('success'):
+                d = js['data']
+                return float(d.get('fundingRate', 0)), float(d.get('holdVol', 0))
     except: return None, None
-
-async def fetch_mexc_fr_oi(session, symbol):
-    q = symbol.replace('/', '_')
-    try:
-        js = await (await session.get(f'https://contract.mexc.com/api/v1/contract/ticker?symbol={q}')).json()
-        if js.get('success'):
-            d = js['data']
-            return float(d.get('fundingRate', 0)), float(d.get('holdVol', 0))
-    except: pass
-    return None, None
 
 async def scan_exchange(id_):
     exchange = getattr(ccxt, id_)({'enableRateLimit': True, 'timeout': 30000, 'options': {'defaultType': 'future'}})
-    pairs = await load_usdt_pairs(exchange)
-    async with aiohttp.ClientSession() as session:
-        for sym in pairs:
-            df = await fetch_ohlcv(exchange, sym)
-            if df is None: continue
-            for fn in PATTERN_FUNCS:
-                pattern = fn(df)
-                if pattern:
-                    fr, oi = await (fetch_binance_fr_oi if id_ == 'binance' else fetch_mexc_fr_oi)(session, sym.replace('/', '') if id_ == 'binance' else sym)
-                    atr = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
-                    vol = df['vol'].sum()
-                    last = df['close'].iloc[-1]
-                    ts = datetime.now(timezone.utc).strftime('%H:%M UTC')
-                    msg = f"{id_.upper()} | {sym} | Formasyon: {pattern['name']} ({pattern['desc']})\nHacim24: {vol:,.0f} | ATR: {atr:.4f} | FR: {fr:.4% if fr else 'N/A'} | OI: {oi:,.0f if oi else 'N/A'}\nSaat: {ts} | Fiyat: {last}"
-                    send_sync_message(msg)
-                    await asyncio.sleep(0.2)
-    await exchange.close()
+    try:
+        pairs = await load_usdt_pairs(exchange)
+        async with aiohttp.ClientSession() as session:
+            for sym in pairs:
+                df = await fetch_ohlcv(exchange, sym)
+                if df is None: continue
+                for fn in PATTERN_FUNCS:
+                    pattern = fn(df)
+                    if pattern:
+                        fr, oi = await fetch_fr_oi(session, id_, sym.replace('/', '') if id_ == 'binance' else sym)
+                        atr = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
+                        vol = df['vol'].sum()
+                        last = df['close'].iloc[-1]
+                        ts = datetime.now(timezone.utc).strftime('%H:%M UTC')
+                        msg = f"{id_.upper()} | {sym} | Formasyon: {pattern['name']} ({pattern['desc']})\nHacim24: {vol:,.0f} | ATR: {atr:.4f} | FR: {fr:.4% if fr else 'N/A'} | OI: {oi:,.0f if oi else 'N/A'}\nSaat: {ts} | Fiyat: {last}"
+                        await send(msg)
+                        await asyncio.sleep(0.2)
+    finally:
+        await exchange.close()
 
 async def main():
-    send_sync_message('🚀 Bot taramaya başladı')
+    await send('🚀 Bot taramaya başladı')
     while True:
         try:
             await asyncio.gather(scan_exchange('binance'), scan_exchange('mexc'))
         except Exception as e:
-            send_sync_message(f'❗ Hata: {e}')
+            await send(f'❗ Hata: {e}')
         await asyncio.sleep(SCAN_INTERVAL_SEC)
 
 if __name__ == '__main__':
