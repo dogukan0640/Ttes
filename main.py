@@ -1,30 +1,29 @@
+# 📛 Telegram bağlantı havuzu taşma sorunu → kesin çözüm: asyncio.Queue + tek worker
 
-import os, asyncio, logging
+import asyncio
 from telegram import Bot
-from multi_timeframe_scan import scan_multi_timeframes
+import os
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "7744478523:AAEtRJar6uF7m0cxKfQh7r7TltXYxWwtmm0")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "1009868232")
-SCAN_INTERVAL_SEC = 900
-
 bot = Bot(token=TELEGRAM_TOKEN)
-logging.basicConfig(level=logging.INFO)
+message_queue = asyncio.Queue()
 
-async def send(msg):
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, bot.send_message, TELEGRAM_CHAT_ID, msg)
+# 🔄 Her mesajı sıraya al
+def queue_message(msg):
+    message_queue.put_nowait(msg)
 
-async def main():
-    await send('🚀 Çoklu zamanlı formasyon botu başladı')
+# 🧵 Kuyruktaki mesajları gönderir
+async def telegram_worker():
     while True:
+        msg = await message_queue.get()
         try:
-            await asyncio.gather(
-                scan_multi_timeframes('binance', send),
-                scan_multi_timeframes('mexc', send)
-            )
+            await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
         except Exception as e:
-            await send(f'❗ Hata: {e}')
-        await asyncio.sleep(SCAN_INTERVAL_SEC)
+            print(f"Telegram send error: {e}")
+        await asyncio.sleep(1.2)
+        message_queue.task_done()
 
-if __name__ == '__main__':
-    asyncio.run(main())
+# 🧠 Kullanım:
+# 1. main.py'de: asyncio.create_task(telegram_worker())
+# 2. send(msg) yerine: queue_message(msg)
