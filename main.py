@@ -1,34 +1,24 @@
-# ✅ GÜNCELLENMİŞ VE HATA GİDERİLMİŞ ANA DOSYA (Render uyumlu main.py)
-# Bu sürüm, Price Action (Alçalan Üçgen, OB, MSB), FR/OI, hacim, ATR, telegram bildirimi içerir.
-# CSV kayıt işlemleri hata vermez; 'data/' klasörü varsa otomatik oluşturulur.
 
 import os, asyncio, logging, aiohttp, pandas as pd, numpy as np
 from datetime import datetime, timezone
 from telegram import Bot
 import ccxt.async_support as ccxt
 
-# ------------------ Ayarlar ------------------
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "7744478523:AAEtRJar6uF7m0cxKfQh7r7TltXYxWwtmm0")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "7744478523:AAEtRJar6uF7m0cxKfQh7r7TltXYxWwtmm0")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "1009868232")
-
 bot = Bot(token=TELEGRAM_TOKEN)
+
 logging.basicConfig(level=logging.INFO)
 SCAN_INTERVAL_SEC = 900
 LOOKBACK_CANDLES = 120
 TIMEFRAME = '15m'
 
-# ------------------ Yardımcı ------------------
+def send_sync_message(msg):
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, bot.send_message, TELEGRAM_CHAT_ID, msg)
+
 def pct(x, y): return (x - y) / y if y else 0.0
-async def send(msg):
-    try: await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-    except Exception as e: logging.error(f'Telegram gönderim hatası: {e}')
 
-def save_to_csv_safe(df, file_path):
-    directory = os.path.dirname(file_path)
-    if directory: os.makedirs(directory, exist_ok=True)
-    df.to_csv(file_path, index=False)
-
-# ------------------ Formasyonlar ------------------
 def detect_desc_triangle(df):
     if len(df) < 20: return None
     look = df.tail(LOOKBACK_CANDLES)
@@ -57,7 +47,6 @@ def detect_msb(df):
 
 PATTERN_FUNCS = [detect_desc_triangle, detect_order_block, detect_msb]
 
-# ------------------ Veri Toplayıcı ------------------
 async def load_usdt_pairs(exchange):
     markets = await exchange.load_markets()
     return [s for s, m in markets.items() if m.get('quote') == 'USDT' and m['active']]
@@ -65,8 +54,7 @@ async def load_usdt_pairs(exchange):
 async def fetch_ohlcv(exchange, symbol):
     try:
         ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LOOKBACK_CANDLES)
-        df = pd.DataFrame(ohlcv, columns=['ts','open','high','low','close','vol'])
-        return df
+        return pd.DataFrame(ohlcv, columns=['ts','open','high','low','close','vol'])
     except: return None
 
 async def fetch_binance_fr_oi(session, symbol):
@@ -82,11 +70,12 @@ async def fetch_mexc_fr_oi(session, symbol):
     q = symbol.replace('/', '_')
     try:
         js = await (await session.get(f'https://contract.mexc.com/api/v1/contract/ticker?symbol={q}')).json()
-        if js.get('success'): d = js['data']; return float(d.get('fundingRate',0)), float(d.get('holdVol',0))
+        if js.get('success'):
+            d = js['data']
+            return float(d.get('fundingRate', 0)), float(d.get('holdVol', 0))
     except: pass
     return None, None
 
-# ------------------ Taramacı ------------------
 async def scan_exchange(id_):
     exchange = getattr(ccxt, id_)({'enableRateLimit': True, 'timeout': 30000, 'options': {'defaultType': 'future'}})
     pairs = await load_usdt_pairs(exchange)
@@ -97,27 +86,23 @@ async def scan_exchange(id_):
             for fn in PATTERN_FUNCS:
                 pattern = fn(df)
                 if pattern:
-                    if id_ == 'binance': fr, oi = await fetch_binance_fr_oi(session, sym.replace('/',''))
-                    else: fr, oi = await fetch_mexc_fr_oi(session, sym)
+                    fr, oi = await (fetch_binance_fr_oi if id_ == 'binance' else fetch_mexc_fr_oi)(session, sym.replace('/', '') if id_ == 'binance' else sym)
                     atr = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
                     vol = df['vol'].sum()
                     last = df['close'].iloc[-1]
                     ts = datetime.now(timezone.utc).strftime('%H:%M UTC')
-                    msg = f"{id_.upper()} | {sym} | Formasyon: {pattern['name']} ({pattern['desc']})\n"
-                    msg += f"Hacim24: {vol:,.0f} | ATR: {atr:.4f} | FR: {fr:.4% if fr else 'N/A'} | OI: {oi:,.0f if oi else 'N/A'}\n"
-                    msg += f"Saat: {ts} | Fiyat: {last}"
-                    await send(msg)
+                    msg = f"{id_.upper()} | {sym} | Formasyon: {pattern['name']} ({pattern['desc']})\nHacim24: {vol:,.0f} | ATR: {atr:.4f} | FR: {fr:.4% if fr else 'N/A'} | OI: {oi:,.0f if oi else 'N/A'}\nSaat: {ts} | Fiyat: {last}"
+                    send_sync_message(msg)
                     await asyncio.sleep(0.2)
     await exchange.close()
 
-# ------------------ Ana Döngü ------------------
 async def main():
-    await send('🚀 Bot taramaya başladı')
+    send_sync_message('🚀 Bot taramaya başladı')
     while True:
         try:
             await asyncio.gather(scan_exchange('binance'), scan_exchange('mexc'))
         except Exception as e:
-            await send(f'❗ Hata: {e}')
+            send_sync_message(f'❗ Hata: {e}')
         await asyncio.sleep(SCAN_INTERVAL_SEC)
 
 if __name__ == '__main__':
