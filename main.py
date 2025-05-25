@@ -1,5 +1,5 @@
-# main.py (tamamen hatasız, Render uyumlu, session+exchange cleanup garantili)
-# Price Action + Formasyon + FR/OI + Telegram + Kesintisiz döngü sistemi içerir
+# 📦 main.py (FR/OI format hatası düzeltilmiş, final sürüm)
+# Değişiklik: .4% if fr else 'N/A' hatası giderildi —> güvenli string formatlama
 
 import os, asyncio, logging, aiohttp, pandas as pd, numpy as np
 from datetime import datetime, timezone
@@ -79,9 +79,13 @@ async def scan_exchange(id_):
                     vol = df['vol'].sum()
                     last = df['close'].iloc[-1]
                     ts = datetime.now(timezone.utc).strftime('%H:%M UTC')
-                    msg = f"{id_.upper()} | {sym} | Formasyon: {pattern['name']} ({pattern['desc']})\n"
-                    msg += f"Hacim24: {vol:,.0f} | ATR: {atr:.4f} | FR: {fr:.4% if fr else 'N/A'} | OI: {oi:,.0f if oi else 'N/A'}\n"
-                    msg += f"Saat: {ts} | Fiyat: {last}"
+                    fr_txt = f"{fr:.4%}" if fr is not None else "N/A"
+                    oi_txt = f"{oi:,.0f}" if oi is not None else "N/A"
+                    msg = (
+                        f"{id_.upper()} | {sym} | Formasyon: {pattern['name']} ({pattern['desc']})\n"
+                        f"Hacim24: {vol:,.0f} | ATR: {atr:.4f} | FR: {fr_txt} | OI: {oi_txt}\n"
+                        f"Saat: {ts} | Fiyat: {last}"
+                    )
                     await send(msg)
                     await asyncio.sleep(0.2)
     finally:
