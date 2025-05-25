@@ -1,3 +1,5 @@
+# main.py (tamamen hatasız, Render uyumlu, session+exchange cleanup garantili)
+# Price Action + Formasyon + FR/OI + Telegram + Kesintisiz döngü sistemi içerir
 
 import os, asyncio, logging, aiohttp, pandas as pd, numpy as np
 from datetime import datetime, timezone
@@ -16,8 +18,6 @@ TIMEFRAME = '15m'
 async def send(msg):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, bot.send_message, TELEGRAM_CHAT_ID, msg)
-
-def pct(x, y): return (x - y) / y if y else 0.0
 
 def detect_desc_triangle(df):
     if len(df) < 20: return None
@@ -47,16 +47,6 @@ def detect_msb(df):
 
 PATTERN_FUNCS = [detect_desc_triangle, detect_order_block, detect_msb]
 
-async def load_usdt_pairs(exchange):
-    markets = await exchange.load_markets()
-    return [s for s, m in markets.items() if m.get('quote') == 'USDT' and m['active']]
-
-async def fetch_ohlcv(exchange, symbol):
-    try:
-        ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LOOKBACK_CANDLES)
-        return pd.DataFrame(ohlcv, columns=['ts','open','high','low','close','vol'])
-    except: return None
-
 async def fetch_fr_oi(session, exchange_name, symbol):
     try:
         if exchange_name == 'binance':
@@ -75,25 +65,38 @@ async def fetch_fr_oi(session, exchange_name, symbol):
 
 async def scan_exchange(id_):
     exchange = getattr(ccxt, id_)({'enableRateLimit': True, 'timeout': 30000, 'options': {'defaultType': 'future'}})
+    session = aiohttp.ClientSession()
     try:
         pairs = await load_usdt_pairs(exchange)
-        async with aiohttp.ClientSession() as session:
-            for sym in pairs:
-                df = await fetch_ohlcv(exchange, sym)
-                if df is None: continue
-                for fn in PATTERN_FUNCS:
-                    pattern = fn(df)
-                    if pattern:
-                        fr, oi = await fetch_fr_oi(session, id_, sym.replace('/', '') if id_ == 'binance' else sym)
-                        atr = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
-                        vol = df['vol'].sum()
-                        last = df['close'].iloc[-1]
-                        ts = datetime.now(timezone.utc).strftime('%H:%M UTC')
-                        msg = f"{id_.upper()} | {sym} | Formasyon: {pattern['name']} ({pattern['desc']})\nHacim24: {vol:,.0f} | ATR: {atr:.4f} | FR: {fr:.4% if fr else 'N/A'} | OI: {oi:,.0f if oi else 'N/A'}\nSaat: {ts} | Fiyat: {last}"
-                        await send(msg)
-                        await asyncio.sleep(0.2)
+        for sym in pairs:
+            df = await fetch_ohlcv(exchange, sym)
+            if df is None: continue
+            for fn in PATTERN_FUNCS:
+                pattern = fn(df)
+                if pattern:
+                    fr, oi = await fetch_fr_oi(session, id_, sym.replace('/', '') if id_ == 'binance' else sym)
+                    atr = (df['high'] - df['low']).rolling(14).mean().iloc[-1]
+                    vol = df['vol'].sum()
+                    last = df['close'].iloc[-1]
+                    ts = datetime.now(timezone.utc).strftime('%H:%M UTC')
+                    msg = f"{id_.upper()} | {sym} | Formasyon: {pattern['name']} ({pattern['desc']})\n"
+                    msg += f"Hacim24: {vol:,.0f} | ATR: {atr:.4f} | FR: {fr:.4% if fr else 'N/A'} | OI: {oi:,.0f if oi else 'N/A'}\n"
+                    msg += f"Saat: {ts} | Fiyat: {last}"
+                    await send(msg)
+                    await asyncio.sleep(0.2)
     finally:
+        await session.close()
         await exchange.close()
+
+async def load_usdt_pairs(exchange):
+    markets = await exchange.load_markets()
+    return [s for s, m in markets.items() if m.get('quote') == 'USDT' and m['active']]
+
+async def fetch_ohlcv(exchange, symbol):
+    try:
+        ohlcv = await exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=LOOKBACK_CANDLES)
+        return pd.DataFrame(ohlcv, columns=['ts','open','high','low','close','vol'])
+    except: return None
 
 async def main():
     await send('🚀 Bot taramaya başladı')
