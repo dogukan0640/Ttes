@@ -1,6 +1,0 @@
-lightgbm
-pandas
-numpy
-requests
-python-telegram-bot==13.7
-beautifulsoup4
