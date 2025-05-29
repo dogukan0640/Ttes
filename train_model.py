@@ -10,30 +10,31 @@ def train_model():
         # Veriyi oku
         data = pd.read_csv("signals.csv")
 
-        # Gereksiz satırları at, veri türlerini düzelt
+        # NaN satırları sil
         data.dropna(inplace=True)
-        X = data[["fr", "oi", "cvd", "price"]].astype(float)
+
+        # Özellikleri float'a çevir
+        X = data[["fr", "oi", "cvd", "price"]].astype("float64")
         y = data["label"].astype(int)
 
-        # Veri yetersizse uyarı ver
         if len(X) < 10:
             send_telegram_message("⚠️ AI eğitimi başarısız: Yetersiz veri.")
             return
 
-        # Train/test ayrımı
+        # Eğitim verisi ayır
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 
         # Modeli eğit
         model = lgb.LGBMClassifier(max_depth=3, num_leaves=7)
         model.fit(X_train, y_train)
 
-        # Doğruluk hesabı
+        # Doğruluk
         acc = accuracy_score(y_test, model.predict(X_test))
 
-        # Modeli kaydet
+        # Kaydet
         joblib.dump(model, "model.pkl")
 
-        # Telegram'a bildirim
+        # Bildirim
         send_telegram_message(f"📊 AI eğitimi (LightGBM) tamamlandı. Doğruluk: %{int(acc * 100)}")
 
     except Exception as e:
