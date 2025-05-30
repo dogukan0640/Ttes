@@ -1,65 +1,58 @@
 
 import time
-import threading
-from train_model import train_model
-from data_collector import get_all_data
-from ai_model import load_model, predict
+import requests
+from data_collector import get_coin_data
+from ai_model import load_model
 from short_squeeze_detector import detect_squeeze
 from telegram_notifier import send_telegram_message
 from keep_alive import keep_alive
-import pandas as pd
 from datetime import datetime
-import os
+import csv
 
-def run_training_schedule():
-    while True:
-        try:
-            train_model()
-        except Exception as e:
-            send_telegram_message(f"⚠️ AI eğitimi hatası: {str(e)}")
-        time.sleep(7200)  # 2 saat
+model = load_model()
+
+def log_signal(symbol, fr, oi, cvd, price, prediction):
+    log_file = "logs/signals_log.csv"
+    header = ["timestamp", "symbol", "fr", "oi", "cvd", "price", "prediction"]
+    row = [datetime.utcnow().isoformat(), symbol, fr, oi, cvd, price, prediction]
+
+    try:
+        with open(log_file, "a", newline="") as f:
+            writer = csv.writer(f)
+            if f.tell() == 0:
+                writer.writerow(header)
+            writer.writerow(row)
+    except Exception as e:
+        print("Log error:", e)
+
+def get_all_usdt_pairs():
+    url = "https://api.binance.com/api/v3/exchangeInfo"
+    try:
+        data = requests.get(url).json()
+        symbols = [s["symbol"] for s in data["symbols"] if s["symbol"].endswith("USDT") and s["status"] == "TRADING"]
+        return symbols
+    except Exception as e:
+        print("Symbol fetch error:", e)
+        return []
 
 def run_bot():
-    print("Bot başlatıldı.")
-    model = load_model()
-
+    send_telegram_message("🤖 Bot başlatıldı. Tüm USDT pariteleri taranıyor...")
     while True:
-        try:
-            print("Veriler alınıyor...")
-            data = get_all_data()
-            if not data.empty:
-                predictions = predict(model, data)
-                logs = []
-                for idx, row in data.iterrows():
-                    signal_strength = predictions[idx]
-                    is_squeeze = detect_squeeze(row)
-
-                    log_entry = {
-                        "timestamp": datetime.utcnow().isoformat(),
-                        "symbol": row["symbol"],
-                        "fr": row["fr"],
-                        "oi": row["oi"],
-                        "cvd": row["cvd"],
-                        "price": row["price"],
-                        "prediction": signal_strength,
-                        "actual_squeeze": is_squeeze
-                    }
-                    logs.append(log_entry)
-
-                    if signal_strength >= 0.5 and is_squeeze:
-                        send_telegram_message(f"⚠️ Güçlü Short Squeeze: {row['symbol']} | Güven: %{int(signal_strength * 100)}")
-
-                # Sinyal arşivine yaz
-                os.makedirs("logs", exist_ok=True)
-                pd.DataFrame(logs).to_csv("logs/signals_log.csv", mode='a', index=False, header=not os.path.exists("logs/signals_log.csv"))
-
-        except Exception as e:
-            send_telegram_message(f"❌ Hata oluştu: {str(e)}")
-
+        coins = get_all_usdt_pairs()
+        for symbol in coins:
+            try:
+                fr, oi, cvd, price = get_coin_data(symbol)
+                if None in [fr, oi, cvd, price]:
+                    continue
+                features = [[fr, oi, cvd, price]]
+                prediction = model.predict(features)[0]
+                log_signal(symbol, fr, oi, cvd, price, prediction)
+                if detect_squeeze(fr, oi, cvd):
+                    send_telegram_message(f"⚠️ Squeeze sinyali: {symbol}\nFR: {fr}, OI: {oi}, CVD: {cvd}")
+            except Exception as e:
+                print(f"Hata ({symbol}):", e)
         time.sleep(900)  # 15 dakika
 
 if __name__ == "__main__":
     keep_alive()
-    send_telegram_message("🤖 Bot başarıyla başlatıldı ve squeeze taramasına başladı.")
-    threading.Thread(target=run_training_schedule).start()
     run_bot()
