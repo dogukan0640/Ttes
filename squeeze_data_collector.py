@@ -18,7 +18,8 @@ def analyze_squeeze(symbol, coin_data):
     high = float(coin_data["highPrice"])
     low = float(coin_data["lowPrice"])
     if last_price == 0:
-    return None  # Hatalı veri varsa atla
+        return None  # Hatalı veri varsa atla
+    
     atr_like = (high - low) / last_price
 
     volume = float(coin_data["volume"])
