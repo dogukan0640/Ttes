@@ -1,4 +1,0 @@
-pandas
-lightgbm
-numpy
-requests
