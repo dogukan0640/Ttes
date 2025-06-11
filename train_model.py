@@ -8,7 +8,7 @@ from sklearn.metrics import accuracy_score, classification_report
 import pickle
 import time
 from datetime import datetime, timedelta
-import os # os modülünü ekledik
+import os 
 
 # --- Konfigürasyon ---
 TRAIN_SYMBOL = "BTCUSDT" # AI modeli için eğitim yapılacak sembol
@@ -22,9 +22,9 @@ PERSISTENT_STORAGE_PATH = "/opt/render/persist"
 MODEL_PATH = os.path.join(PERSISTENT_STORAGE_PATH, 'price_direction_model.pkl')
 
 # Hedef Etiketleme Eşiği (yükseliş tanımı için)
-PRICE_CHANGE_THRESHOLD = 0.005 # %0.5'ten fazla yükseliş ise 1, değilse 0
+PRICE_CHANGE_THRESHOLD = 0.01 # %1.0'den fazla yükseliş ise 1, değilse 0
 
-# Tüm özellik sütunlarının doğru ve tutarlı sırası
+# Tüm özellik sütunlarının doğru ve tutarlı sırası - YENİ ÖZELLİKLER EKLENDİ!
 FEATURE_COLUMNS = [
     'body_size', 'upper_shadow', 'lower_shadow', 'candle_range',
     'body_to_range_ratio', 'upper_shadow_to_body_ratio', 'lower_shadow_to_body_ratio',
@@ -33,7 +33,14 @@ FEATURE_COLUMNS = [
     'price_change_pct_1', 'price_change_pct_3', 'price_change_pct_5',
     'sma_5', 'sma_10', 'volatility_5', 'volatility_10',
     'rsi', 'macd', 'macd_signal', 'macd_hist',
-    'bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width'
+    'bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width',
+    # --- YENİ EKLENEN ÖZELLİKLER ---
+    'ema_20', 'ema_50', 'ema_200', # Üstel Hareketli Ortalamalar
+    'ema_20_slope', # EMA eğimi
+    'atr', # Ortalama Gerçek Aralık (Volatilite)
+    'roc_14', # Değişim Oranı (Momentum)
+    'dist_from_5_high', 'dist_from_5_low', # Son 5 mumun zirve/diplerine göre uzaklık
+    'dist_from_20_high', 'dist_from_20_low', # Son 20 mumun zirve/diplerine göre uzaklık
 ]
 
 # --- Veri Çekme Fonksiyonu (Geçmiş Mum Verileri İçin) ---
@@ -67,7 +74,6 @@ def get_historical_klines(symbol, interval, limit):
 def prepare_data_for_training(df):
     """
     Model eğitimi için daha gelişmiş özellikleri çıkarır ve hedef değişkeni oluşturur.
-    Hedef: Bir sonraki mumun kapanışı mevcut mumun kapanışından belirlenen eşik kadar yüksek mi olacak?
     """
     if df is None or df.empty:
         return None, None
@@ -99,12 +105,12 @@ def prepare_data_for_training(df):
     # 4. Hareketli Ortalamalar (SMA)
     features['sma_5'] = df['close'].rolling(window=5).mean().fillna(0)
     features['sma_10'] = df['close'].rolling(window=10).mean().fillna(0)
-
+    
     # 5. Volatilite (Standard Sapma)
     features['volatility_5'] = df['close'].rolling(window=5).std().fillna(0)
     features['volatility_10'] = df['close'].rolling(window=10).std().fillna(0)
 
-    # --- Yeni Gelişmiş Özellikler (Teknik Göstergeler) ---
+    # --- Mevcut Gelişmiş Özellikler (Teknik Göstergeler) ---
     # 6. RSI (Relative Strength Index)
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -132,15 +138,48 @@ def prepare_data_for_training(df):
     features['bb_width'] = (features['bb_upper'] - features['bb_lower']) / features['bb_middle'].replace(0, 1e-9)
     features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']] = features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']].fillna(0)
 
-    # --- Hedef Etiketleme (Geliştirilmiş Kalite) ---
+
+    # --- YENİ EKLENEN TEKNİK GÖSTERGELER (Trend, Momentum, Volatilite, Fibonacci-vari) ---
+    # 9. EMA (Exponential Moving Averages)
+    features['ema_20'] = df['close'].ewm(span=20, adjust=False).mean().fillna(0)
+    features['ema_50'] = df['close'].ewm(span=50, adjust=False).mean().fillna(0)
+    features['ema_200'] = df['close'].ewm(span=200, adjust=False).mean().fillna(0)
+    
+    # 10. EMA Eğimi (Slope) - Basit bir değişim oranı
+    features['ema_20_slope'] = features['ema_20'].diff().fillna(0)
+
+    # 11. ATR (Average True Range)
+    high_low = df['high'] - df['low']
+    high_prev_close = abs(df['high'] - df['close'].shift())
+    low_prev_close = abs(df['low'] - df['close'].shift())
+    tr = pd.DataFrame({'hl': high_low, 'hpc': high_prev_close, 'lpc': low_prev_close}).max(axis=1)
+    features['atr'] = tr.rolling(window=14).mean().fillna(0) # 14 periyot ATR
+
+    # 12. ROC (Rate of Change) - Momentum
+    features['roc_14'] = df['close'].pct_change(periods=14).fillna(0)
+
+    # 13. Fiyatın N-periyot Yüksek/Düşük seviyelerine göre uzaklığı (Fibonacci-vari)
+    # Fiyatın en yüksek/düşük seviyeye olan yüzdesel uzaklığı
+    features['dist_from_5_high'] = (df['high'].rolling(window=5).max() - df['close']) / df['close'].replace(0, 1e-9)
+    features['dist_from_5_low'] = (df['close'] - df['low'].rolling(window=5).min()) / df['close'].replace(0, 1e-9)
+    features['dist_from_20_high'] = (df['high'].rolling(window=20).max() - df['close']) / df['close'].replace(0, 1e-9)
+    features['dist_from_20_low'] = (df['close'] - df['low'].rolling(window=20).min()) / df['close'].replace(0, 1e-9)
+    features[['dist_from_5_high', 'dist_from_5_low', 'dist_from_20_high', 'dist_from_20_low']] = features[['dist_from_5_high', 'dist_from_5_low', 'dist_from_20_high', 'dist_from_20_low']].fillna(0)
+
+
+    # --- Hedef Etiketleme ---
     df['future_price_change'] = (df['close'].shift(-1) - df['close']) / df['close']
     features['target'] = (df['future_price_change'] > PRICE_CHANGE_THRESHOLD).astype(int)
     
+    # NaN değerleri doldurma (en uzun rolling window 200, ROC 14, ATR 14)
+    # İlk 200 satırda NaN değerler olabilir, bunları düşürüyoruz
     features = features.dropna()
-    features = features.replace([np.inf, -np.inf], np.nan).fillna(0)
+    features = features.replace([np.inf, -np.inf], np.nan).fillna(0) # Sonsuz değerleri de temizle
 
     # Önemli: Özellik sütunlarını FEATURE_COLUMNS listesine göre sırala
-    X = features[FEATURE_COLUMNS] # Sadece tanımlı sütunları ve sırasını al
+    # Bu, hem eğitimde hem de tahminde tutarlılığı sağlar.
+    # FEATURE_COLUMNS listesi dışındaki sütunları burada bırakmıyoruz.
+    X = features[FEATURE_COLUMNS] 
     y = features['target']
     
     return X, y
@@ -176,7 +215,7 @@ def run_training_process(symbol=TRAIN_SYMBOL, interval=TRAIN_INTERVAL, limit=TRA
     Yapay zeka modelini eğitir ve kaydeder.
     Bu fonksiyon main.py tarafından çağrılacaktır.
     """
-    print(f"\n--- {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Yapay Zeka Modeli Eğitimi Başladı ---")
+    print(f"\n--- {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Yapay Zeka Modeli Eğitimi Başlandı ---")
     print(f"{symbol} için {interval} aralığında {limit} adet geçmiş mum verisi çekiliyor...")
     
     historical_df = get_historical_klines(symbol, interval, limit)
