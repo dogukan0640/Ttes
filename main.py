@@ -5,15 +5,15 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 import pickle
-from train_model import run_training_process # train_model.py'deki eğitim fonksiyonunu import ettik
+from train_model import run_training_process 
 
 # --- Konfigürasyon ---
 TELEGRAM_TOKEN = "7744478523:AAEtRJar6uF7m0cxKfQh7r7TltXYxWwtmm0" 
 CHAT_ID = "1009868232" 
 
 # Analiz için eşik değerleri
-MIN_HACIM_USDT = 50_000_000  # Minimum 24s Hacim (50 Milyon USDT)
-MIN_FIYAT_DEGISIM_YUZDE = 3.0 # Dikkate alınacak minimum 24s fiyat değişim yüzdesi (mutlak değer)
+MIN_HACIM_USDT = 50_000_000  
+MIN_FIYAT_DEGISIM_YUZDE = 3.0 
 
 # Tarama sıklığı (saniye cinsinden)
 TARAMA_SIKLIGI_DAKIKA = 30 
@@ -21,8 +21,6 @@ TARAMA_SIKLIGI_SANİYE = TARAMA_SIKLIGI_DAKIKA * 60
 
 # Mum grafiği zaman dilimi ve çekilecek mum sayısı
 CANDLESTICK_INTERVAL = "1h" 
-# ML tahmini ve gösterge hesaplamaları için yeterli geçmiş mum gerekli
-# En uzun periyot EMA 200 olduğu için en az 200 mum + buffer = 250 ideal
 NUM_CANDLES_TO_FETCH = 250 
 
 # Kalıcı disk yolu (Render'da belirlediğiniz Mount Path ile aynı olmalı)
@@ -36,9 +34,7 @@ LAST_TRAIN_TIME_FILE = os.path.join(PERSISTENT_STORAGE_PATH, 'last_train_time.tx
 ai_model = None 
 
 # Otomatik eğitim konfigürasyonu
-# Her dağıtımda eğitimi zorlamak için bu değeri 0'a çektik.
-# Eğitim yapıldıktan sonra tekrar 2 olarak ayarlayabilirsiniz.
-AUTO_TRAIN_INTERVAL_DAYS = 2 # HER ZAMAN EĞİTİMİ TETİKLE!
+AUTO_TRAIN_INTERVAL_DAYS = 2 # Her 2 günde bir eğitim
 TRAIN_SYMBOL = "BTCUSDT" 
 TRAIN_INTERVAL = "1h"    
 TRAIN_LIMIT = 1000       
@@ -89,7 +85,6 @@ def load_ai_model(model_path):
 def get_last_train_time():
     """Son eğitim zamanını dosyadan okur."""
     try:
-        # Klasör yoksa oluştur (Render kalıcı disk için gerekli)
         os.makedirs(os.path.dirname(LAST_TRAIN_TIME_FILE), exist_ok=True)
         with open(LAST_TRAIN_TIME_FILE, 'r') as f:
             timestamp_str = f.read().strip()
@@ -103,7 +98,6 @@ def get_last_train_time():
 def save_last_train_time(timestamp):
     """Son eğitim zamanını dosyaya kaydeder."""
     try:
-        # Klasör yoksa oluştur (Render kalıcı disk için gerekli)
         os.makedirs(os.path.dirname(LAST_TRAIN_TIME_FILE), exist_ok=True)
         with open(LAST_TRAIN_TIME_FILE, 'w') as f:
             f.write(timestamp.isoformat())
@@ -304,7 +298,6 @@ def extract_features_for_prediction(klines_data):
     Canlı mum verilerinden modelin beklediği özellikleri çıkarır.
     Bu fonksiyon, train_model.py'deki prepare_data_for_training ile AYNI MANTIKTA olmalı.
     """
-    # En uzun EMA 200 periyot gerektiriyor, ROC/ATR 14, BB 20 -> en az 200 mum + buffer
     if len(klines_data) < 200: 
         print(f"Uyarı: ML tahmini için yeterli mum verisi yok ({len(klines_data)} yerine en az 200 gerekli).")
         return None
@@ -537,6 +530,21 @@ def piyasayi_tara_ve_analiz_et():
                     "formasyonlar": ", ".join(tespit_edilen_formasyonlar) if tespit_edilen_formasyonlar else "Yok",
                     "ml_tahmin": ml_tahmin
                 }
+                
+                # --- YENİ EKLENEN GÖSTERGELERİ SİNYALE EKLEME ---
+                if features_for_pred is not None and not features_for_pred.empty:
+                    aday_bilgisi["ek_gostergeler"] = (
+                        f"EMA20: `{features_for_pred['ema_20'].iloc[0]:.4f}` "
+                        f"(Eğim: `{features_for_pred['ema_20_slope'].iloc[0]:.4f}`)\n"
+                        f"▫️ RSI: `{features_for_pred['rsi'].iloc[0]:.2f}` "
+                        f"ATR: `{features_for_pred['atr'].iloc[0]:.4f}` "
+                        f"ROC14: `{features_for_pred['roc_14'].iloc[0]*100:.2f}%`\n"
+                        f"▫️ 5D Yüksek Uzaklık: `{features_for_pred['dist_from_5_high'].iloc[0]*100:.2f}%` "
+                        f"5D Düşük Uzaklık: `{features_for_pred['dist_from_5_low'].iloc[0]*100:.2f}%`"
+                    )
+                else:
+                    aday_bilgisi["ek_gostergeler"] = "Ek Göstergeler: Yok"
+                
                 potansiyel_adaylar.append(aday_bilgisi)
 
         except KeyError as e:
@@ -558,6 +566,11 @@ def piyasayi_tara_ve_analiz_et():
             mesaj += f"▫️ Hacim (24s): `{aday['hacim_24s']}`\n"
             mesaj += f"▫️ Tespit Edilen Formasyonlar: `{aday['formasyonlar']}`\n"
             mesaj += f"▫️ AI Tahmini: `{aday['ml_tahmin']}`\n" 
+            
+            # --- EK GÖSTERGELERİ SİNYALE EKLEME ---
+            if "ek_gostergeler" in aday:
+                mesaj += f"▫️ Ek Göstergeler:\n{aday['ek_gostergeler']}\n"
+            
             mesaj += "--------------------------------------\n"
         
         telegram_sinyal_gonder(mesaj)
@@ -573,22 +586,33 @@ if __name__ == "__main__":
         print("HATA: Lütfen TELEGRAM_TOKEN ve CHAT_ID'yi main.py dosyası içinde kendi bilgilerinizle güncelleyin.")
         exit() 
 
-    # Render kalıcı diskinin klasörünün mevcut olduğundan emin olun
     os.makedirs(PERSISTENT_STORAGE_PATH, exist_ok=True)
 
-    # Bot ilk çalıştığında model yüklenemezse veya eğitim süresi dolduysa eğitim tetiklenecek.
-    # AUTO_TRAIN_INTERVAL_DAYS = 0 ayarı sayesinde her deployda eğitim tetiklenecek.
     ai_model = load_ai_model(MODEL_PATH)
     last_train_time = get_last_train_time()
     current_time = datetime.now()
 
     should_train_on_start = False
-    if ai_model is None: # Model hiç yüklenememişse (ilk defa veya dosya bozuksa)
-        should_train_on_start = True
-    elif last_train_time is None: # Model yüklü ama zaman damgası yoksa (ilk defa kalıcı diskle)
-        should_train_on_start = True
-    elif (current_time - last_train_time) > timedelta(days=AUTO_TRAIN_INTERVAL_DAYS):
-        should_train_on_start = True
+    if ai_model is None: 
+        print("Yapay zeka modeli bellekte yüklü değil. Yüklü model dosyası kontrol ediliyor...")
+        if not os.path.exists(MODEL_PATH): 
+            print(f"Model dosyası '{MODEL_PATH}' bulunamadı. Eğitim tetikleniyor.")
+            should_train_on_start = True
+        else: 
+            ai_model = load_ai_model(MODEL_PATH)
+            if ai_model is None: 
+                print("Yüklü model dosyası bozuk veya yüklenemedi. Eğitim tetikleniyor.")
+                should_train_on_start = True
+    
+    if ai_model is not None and last_train_time:
+        if (current_time - last_train_time) > timedelta(days=AUTO_TRAIN_INTERVAL_DAYS):
+            print(f"Son eğitim {AUTO_TRAIN_INTERVAL_DAYS} günden daha eski. Yeniden eğitim tetikleniyor.")
+            should_train_on_start = True
+        else:
+            print(f"Son eğitim {last_train_time.strftime('%Y-%m-%d %H:%M:%S')} tarihinde yapılmış. Yeniden eğitim gerekli değil.")
+    elif ai_model is not None and last_train_time is None: 
+        print("Model yüklü ancak son eğitim zamanı bulunamadı. İlk eğitim tetikleniyor.")
+        should_train_on_start = True 
 
     if should_train_on_start:
         print("Bot başlatılırken yapay zeka modeli eğitimi/yeniden eğitimi tetikleniyor...")
