@@ -357,7 +357,7 @@ def extract_features_for_prediction(klines_data):
 # --- Ana Analiz Fonksiyonu ---
 def piyasayi_tara_ve_analiz_et():
     """Binance piyasalarını tarar, yükseliş potansiyeli olan formasyonları ve ML tahminlerini bulur ve sinyal gönderir."""
-    global ai_model 
+    global ai_model # ai_model değişkenini global olarak tanımladık
 
     current_time = datetime.now()
 
@@ -366,8 +366,8 @@ def piyasayi_tara_ve_analiz_et():
         print("Yapay zeka modeli yüklü değil. Model eğitimi başlatılıyor...")
         telegram_sinyal_gonder(f"⏳ **Yapay Zeka Modeli Eğitiliyor/Yeniden Eğitiliyor!** ⏳\nBu işlem biraz sürebilir.")
         if run_training_process(TRAIN_SYMBOL, TRAIN_INTERVAL, TRAIN_LIMIT):
-            global ai_model # Eğitilen yeni modeli yükle
-            ai_model = load_ai_model(MODEL_PATH)
+            # Model başarıyla eğitildiyse, global ai_model değişkenini güncelleyelim
+            ai_model = load_ai_model(MODEL_PATH) 
             telegram_sinyal_gonder(f"✅ **Yapay Zeka Modeli Başarıyla Eğitildi ve Yüklendi!** ✅")
         else:
             telegram_sinyal_gonder(f"❌ **Yapay Zeka Modeli Eğitimi Başarısız Oldu!** ❌\nAI tahmini devre dışı kalacak.")
@@ -407,6 +407,7 @@ def piyasayi_tara_ve_analiz_et():
                         if hasattr(ai_model, 'feature_names_in_') and \
                            not features_for_pred.columns.equals(pd.Index(ai_model.feature_names_in_)):
                             print(f"Uyarı: Özellik sütunları uyumsuz! Sembol: {symbol}. Yeniden sıralanıyor...")
+                            # Modelin beklediği sıraya göre sütunları yeniden sırala
                             features_for_pred = features_for_pred[ai_model.feature_names_in_]
 
                         prediction = ai_model.predict(features_for_pred)[0]
@@ -502,12 +503,9 @@ if __name__ == "__main__":
         print("HATA: Lütfen TELEGRAM_TOKEN ve CHAT_ID'yi main.py dosyası içinde kendi bilgilerinizle güncelleyin.")
         exit() 
 
-    # Bot ilk başladığında veya yeniden başlatıldığında modeli yüklemeye çalışır.
-    # Eğer model.pkl dosyası bulunamazsa, piyasayi_tara_ve_analiz_et içindeki otomatik eğitim onu oluşturur.
     ai_model = load_ai_model(MODEL_PATH)
-    if ai_model is None: # İlk yükleme başarısız olursa veya model yoksa
+    if ai_model is None: 
         print("Yapay zeka modeli ilk çalıştırmada yüklenemedi. İlk eğitim veya yeniden eğitim otomatik olarak tetiklenecektir.")
-        # Piyasa tarama fonksiyonu ilk yüklemeyi veya yeniden eğitimi yönetecek
 
     baslangic_mesaji = f"🚀 **Kripto Formasyon & AI Botu Başlatıldı (Spot & Futures)!** 🚀\nTarama her {TARAMA_SIKLIGI_DAKIKA} dakikada bir yapılacak. Mum aralığı: {CANDLESTICK_INTERVAL}"
     if ai_model: 
@@ -515,10 +513,14 @@ if __name__ == "__main__":
     telegram_sinyal_gonder(baslangic_mesaji)
     print("Bot başlatıldı ve Telegram'a bildirim gönderildi.")
 
-    while True:
-        print(f"{TARAMA_SIKLIGI_DAKIKA} dakika sonraki tarama için bekleniyor...")
-        time.sleep(TARAMA_SIKLIGI_SANİYE)
-        # Her tarama döngüsünde piyasayı tara ve analiz et.
-        # Bu fonksiyon aynı zamanda AI modelinin yüklü olup olmadığını kontrol eder ve
-        # yüklü değilse eğitimi tetikler.
-        piyasayi_tara_ve_analiz_et()
+    try: # Ana döngüyü try-except bloğu ile sardık
+        while True:
+            print(f"{TARAMA_SIKLIGI_DAKIKA} dakika sonraki tarama için bekleniyor...")
+            time.sleep(TARAMA_SIKLIGI_SANİYE)
+            piyasayi_tara_ve_analiz_et()
+    except Exception as e:
+        critical_error_msg = f"🔥🔥🔥 **KRİTİK HATA! Bot Durdu!** 🔥🔥🔥\nLütfen Render loglarını kontrol edin.\nHata Detayı: `{type(e).__name__}: {e}`"
+        telegram_sinyal_gonder(critical_error_msg)
+        print(f"KRİTİK SİSTEM HATASI: {e}")
+        # Bot Render üzerinde yeniden başlatılırsa, döngü tekrar başlayacaktır.
+        # Bu satır, programın tamamen çökmesini önler ve hata bildirimini sağlar.
