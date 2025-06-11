@@ -23,11 +23,18 @@ TARAMA_SIKLIGI_SANİYE = TARAMA_SIKLIGI_DAKIKA * 60
 CANDLESTICK_INTERVAL = "1h" 
 NUM_CANDLES_TO_FETCH = 50 
 
-# Yapay Zeka Modeli Dosyası
-MODEL_PATH = 'price_direction_model.pkl'
+# Kalıcı disk yolu (Render'da belirlediğiniz Mount Path ile aynı olmalı)
+PERSISTENT_STORAGE_PATH = "/opt/render/persist" 
+
+# Yapay Zeka Modeli Dosyası (artık kalıcı disk yoluyla)
+MODEL_PATH = os.path.join(PERSISTENT_STORAGE_PATH, 'price_direction_model.pkl')
+# Son eğitim zamanı dosyası (artık kalıcı disk yoluyla)
+LAST_TRAIN_TIME_FILE = os.path.join(PERSISTENT_STORAGE_PATH, 'last_train_time.txt')
+
 ai_model = None 
 
-# Otomatik eğitim konfigürasyonu (Render ücretsiz planı için basitleştirildi)
+# Otomatik eğitim konfigürasyonu
+AUTO_TRAIN_INTERVAL_DAYS = 2 # Her 2 günde bir eğitim
 TRAIN_SYMBOL = "BTCUSDT" 
 TRAIN_INTERVAL = "1h"    
 TRAIN_LIMIT = 1000       
@@ -68,6 +75,31 @@ def load_ai_model(model_path):
     except Exception as e:
         print(f"Yapay zeka modeli yüklenirken hata oluştu: {e}")
         return None
+
+def get_last_train_time():
+    """Son eğitim zamanını dosyadan okur."""
+    try:
+        # Klasör yoksa oluştur (Render kalıcı disk için gerekli)
+        os.makedirs(os.path.dirname(LAST_TRAIN_TIME_FILE), exist_ok=True)
+        with open(LAST_TRAIN_TIME_FILE, 'r') as f:
+            timestamp_str = f.read().strip()
+            return datetime.fromisoformat(timestamp_str)
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        print(f"Son eğitim zamanı okunurken hata oluştu: {e}")
+        return None
+
+def save_last_train_time(timestamp):
+    """Son eğitim zamanını dosyaya kaydeder."""
+    try:
+        # Klasör yoksa oluştur (Render kalıcı disk için gerekli)
+        os.makedirs(os.path.dirname(LAST_TRAIN_TIME_FILE), exist_ok=True)
+        with open(LAST_TRAIN_TIME_FILE, 'w') as f:
+            f.write(timestamp.isoformat())
+        print(f"Son eğitim zamanı kaydedildi: {timestamp}")
+    except Exception as e:
+        print(f"Son eğitim zamanı kaydedilirken hata oluştu: {e}")
 
 # --- Binance API'den Veri Çekme Yardımcı Fonksiyonu ---
 def _fetch_klines_and_ticker(base_url, market_type, symbol_suffix="USDT"):
@@ -391,7 +423,7 @@ def piyasayi_tara_ve_analiz_et():
             print("Eğitim başarısız, AI tahmini devre dışı kalacak.")
             ai_model = None 
 
-    print(f"\n--- {current_time.strftime('%Y-%m-%d %H:%M:%S')} - Piyasa Taraması Başladı ---")
+    print(f"\n--- {current_time.strftime('%Y-%m-%d %H:%M:%S')} - Piyasa Taraması Başlandı ---")
     
     potansiyel_adaylar = []
 
@@ -421,13 +453,6 @@ def piyasayi_tara_ve_analiz_et():
                 features_for_pred = extract_features_for_prediction(klines)
                 if features_for_pred is not None and not features_for_pred.empty:
                     try:
-                        # Bu kontrol artık FEATURE_COLUMNS listesiyle manuel sıralama yaptığımız için daha az gerekli,
-                        # ancak yine de ekstra bir güvenlik katmanı olarak kalabilir.
-                        # if hasattr(ai_model, 'feature_names_in_') and \
-                        #    not features_for_pred.columns.equals(pd.Index(ai_model.feature_names_in_)):
-                        #     print(f"Uyarı: Özellik sütunları uyumsuz! Sembol: {symbol}. Yeniden sıralanıyor...")
-                        #     features_for_pred = features_for_pred[ai_model.feature_names_in_]
-
                         prediction = ai_model.predict(features_for_pred)[0]
                         prediction_proba = ai_model.predict_proba(features_for_pred)[0] 
                         
@@ -520,6 +545,9 @@ if __name__ == "__main__":
     if not TELEGRAM_TOKEN or not CHAT_ID or TELEGRAM_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
         print("HATA: Lütfen TELEGRAM_TOKEN ve CHAT_ID'yi main.py dosyası içinde kendi bilgilerinizle güncelleyin.")
         exit() 
+
+    # Render kalıcı diskinin klasörünün mevcut olduğundan emin olun
+    os.makedirs(PERSISTENT_STORAGE_PATH, exist_ok=True)
 
     ai_model = load_ai_model(MODEL_PATH)
     if ai_model is None: 
