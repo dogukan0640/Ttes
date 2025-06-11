@@ -8,12 +8,18 @@ from sklearn.metrics import accuracy_score, classification_report
 import pickle
 import time
 from datetime import datetime, timedelta
+import os # os modülünü ekledik
 
 # --- Konfigürasyon ---
 TRAIN_SYMBOL = "BTCUSDT" # AI modeli için eğitim yapılacak sembol
 TRAIN_INTERVAL = "1h"    # AI modeli için eğitim yapılacak mum aralığı
 TRAIN_LIMIT = 1000       # AI modeli eğitimi için çekilecek mum sayısı
-MODEL_PATH = 'price_direction_model.pkl'
+
+# Kalıcı disk yolu (Render'da belirlediğiniz Mount Path ile aynı olmalı)
+PERSISTENT_STORAGE_PATH = "/opt/render/persist" 
+
+# Model dosyasının ve diğer kalıcı dosyaların yolu
+MODEL_PATH = os.path.join(PERSISTENT_STORAGE_PATH, 'price_direction_model.pkl')
 
 # Hedef Etiketleme Eşiği (yükseliş tanımı için)
 PRICE_CHANGE_THRESHOLD = 0.005 # %0.5'ten fazla yükseliş ise 1, değilse 0
@@ -142,6 +148,9 @@ def prepare_data_for_training(df):
 # --- Model Eğitimi ve Kaydetme Fonksiyonu ---
 def train_and_save_model(X, y, model_path=MODEL_PATH):
     """Modeli eğitir ve .pkl dosyasına kaydeder."""
+    # Model dosyasının kaydedileceği klasörü oluştur (eğer yoksa)
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+
     if X.empty or y.empty:
         print("Eğitim verisi boş, model eğitilemiyor.")
         return False
