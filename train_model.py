@@ -1,4 +1,4 @@
-# train_model.py (Refactored for auto-training)
+# train_model.py (Refactored for auto-training & Advanced Features)
 import requests
 import pandas as pd
 import numpy as np
@@ -8,6 +8,15 @@ from sklearn.metrics import accuracy_score, classification_report
 import pickle
 import time
 from datetime import datetime, timedelta
+
+# --- Konfigürasyon ---
+TRAIN_SYMBOL = "BTCUSDT" # AI modeli için eğitim yapılacak sembol
+TRAIN_INTERVAL = "1h"    # AI modeli için eğitim yapılacak mum aralığı
+TRAIN_LIMIT = 1000       # AI modeli eğitimi için çekilecek mum sayısı
+MODEL_PATH = 'price_direction_model.pkl'
+
+# Hedef Etiketleme Eşiği (yükseliş tanımı için)
+PRICE_CHANGE_THRESHOLD = 0.005 # %0.5'ten fazla yükseliş ise 1, değilse 0
 
 # --- Veri Çekme Fonksiyonu (Geçmiş Mum Verileri İçin) ---
 def get_historical_klines(symbol, interval, limit):
@@ -40,7 +49,7 @@ def get_historical_klines(symbol, interval, limit):
 def prepare_data_for_training(df):
     """
     Model eğitimi için daha gelişmiş özellikleri çıkarır ve hedef değişkeni oluşturur.
-    Hedef: Bir sonraki mumun kapanışı mevcut mumun kapanışından yüksek mi olacak? (1: Yükseliş, 0: Düşüş/Kararsızlık)
+    Hedef: Bir sonraki mumun kapanışı mevcut mumun kapanışından belirlenen eşik kadar yüksek mi olacak?
     """
     if df is None or df.empty:
         return None, None
@@ -77,10 +86,45 @@ def prepare_data_for_training(df):
     features['volatility_5'] = df['close'].rolling(window=5).std().fillna(0)
     features['volatility_10'] = df['close'].rolling(window=10).std().fillna(0)
 
-    # Hedef değişken (etiket): Bir sonraki mumun kapanışı mevcut mumun kapanışından büyük mü?
-    features['target'] = (df['close'].shift(-1) > df['close']).astype(int)
+    # --- Yeni Gelişmiş Özellikler (Teknik Göstergeler) ---
+    # 6. RSI (Relative Strength Index)
+    # Varsayılan periyot 14
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss.replace(0, 1e-9)
+    features['rsi'] = 100 - (100 / (1 + rs))
+    features['rsi'] = features['rsi'].fillna(0) # NaN değerleri doldur
+
+    # 7. MACD (Moving Average Convergence Divergence)
+    # Varsayılan hızlı EMA 12, yavaş EMA 26, sinyal hattı 9
+    exp12 = df['close'].ewm(span=12, adjust=False).mean()
+    exp26 = df['close'].ewm(span=26, adjust=False).mean()
+    features['macd'] = exp12 - exp26
+    features['macd_signal'] = features['macd'].ewm(span=9, adjust=False).mean()
+    features['macd_hist'] = features['macd'] - features['macd_signal']
+    features[['macd', 'macd_signal', 'macd_hist']] = features[['macd', 'macd_signal', 'macd_hist']].fillna(0)
+
+    # 8. Bollinger Bantları (BB)
+    # Varsayılan periyot 20, standart sapma 2
+    window = 20
+    num_std_dev = 2
+    features['bb_middle'] = df['close'].rolling(window=window).mean()
+    std_dev = df['close'].rolling(window=window).std()
+    features['bb_upper'] = features['bb_middle'] + (std_dev * num_std_dev)
+    features['bb_lower'] = features['bb_middle'] - (std_dev * num_std_dev)
+    # Fiyatın bantlara göre konumu
+    features['bb_position'] = (df['close'] - features['bb_lower']) / (features['bb_upper'] - features['bb_lower']).replace(0, 1e-9)
+    features['bb_width'] = (features['bb_upper'] - features['bb_lower']) / features['bb_middle'].replace(0, 1e-9)
+    features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']] = features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']].fillna(0)
+
+    # --- Hedef Etiketleme (Geliştirilmiş Kalite) ---
+    # Bir sonraki mumun kapanışının mevcut mumun kapanışından belirlenen eşik kadar yüksek mi?
+    df['future_price_change'] = (df['close'].shift(-1) - df['close']) / df['close']
+    features['target'] = (df['future_price_change'] > PRICE_CHANGE_THRESHOLD).astype(int)
     
     # NaN veya sonsuz değerleri temizle
+    # En uzun rolling window 26 (MACD) veya 20 (BB) olduğu için ilk 26 satırda NaN olabilir.
     features = features.dropna()
     features = features.replace([np.inf, -np.inf], np.nan).fillna(0)
 
@@ -90,7 +134,7 @@ def prepare_data_for_training(df):
     return X, y
 
 # --- Model Eğitimi ve Kaydetme Fonksiyonu ---
-def train_and_save_model(X, y, model_path='price_direction_model.pkl'):
+def train_and_save_model(X, y, model_path=MODEL_PATH):
     """Modeli eğitir ve .pkl dosyasına kaydeder."""
     if X.empty or y.empty:
         print("Eğitim verisi boş, model eğitilemiyor.")
@@ -98,7 +142,10 @@ def train_and_save_model(X, y, model_path='price_direction_model.pkl'):
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
-    model = RandomForestClassifier(n_estimators=200, random_state=42, class_weight='balanced', n_jobs=-1)
+    # --- Model Mimarisinin Optimizasyonu (Elle Ayar) ---
+    # n_estimators: Ağaç sayısı artırıldı. Daha karmaşık ilişkileri öğrenmeye yardımcı olur.
+    # max_depth: Ağaçların maksimum derinliği. Aşırı uyumu azaltmaya yardımcı olur.
+    model = RandomForestClassifier(n_estimators=300, max_depth=10, random_state=42, class_weight='balanced', n_jobs=-1)
     model.fit(X_train, y_train)
 
     y_pred = model.predict(X_test)
@@ -112,7 +159,7 @@ def train_and_save_model(X, y, model_path='price_direction_model.pkl'):
     return True
 
 # --- Ana Eğitim Sürecini Başlatma Fonksiyonu ---
-def run_training_process(symbol="BTCUSDT", interval="1h", limit=1000):
+def run_training_process(symbol=TRAIN_SYMBOL, interval=TRAIN_INTERVAL, limit=TRAIN_LIMIT):
     """
     Yapay zeka modelini eğitir ve kaydeder.
     Bu fonksiyon main.py tarafından çağrılacaktır.
@@ -143,8 +190,4 @@ def run_training_process(symbol="BTCUSDT", interval="1h", limit=1000):
 
 # Eğer bu dosya doğrudan çalıştırılırsa, manuel eğitim yap
 if __name__ == "__main__":
-    # Manuel çalıştırma için varsayılan değerler
-    DEFAULT_SYMBOL = "BTCUSDT"
-    DEFAULT_INTERVAL = "1h"
-    DEFAULT_LIMIT = 1000 
-    run_training_process(DEFAULT_SYMBOL, DEFAULT_INTERVAL, DEFAULT_LIMIT)
+    run_training_process(TRAIN_SYMBOL, TRAIN_INTERVAL, TRAIN_LIMIT)
