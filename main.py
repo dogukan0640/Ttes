@@ -38,7 +38,7 @@ ai_model = None
 # Otomatik eğitim konfigürasyonu
 # Her dağıtımda eğitimi zorlamak için bu değeri 0'a çektik.
 # Eğitim yapıldıktan sonra tekrar 2 olarak ayarlayabilirsiniz.
-AUTO_TRAIN_INTERVAL_DAYS = 0 # HER ZAMAN EĞİTİMİ TETİKLE!
+AUTO_TRAIN_INTERVAL_DAYS = 2 # HER ZAMAN EĞİTİMİ TETİKLE!
 TRAIN_SYMBOL = "BTCUSDT" 
 TRAIN_INTERVAL = "1h"    
 TRAIN_LIMIT = 1000       
