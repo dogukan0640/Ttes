@@ -8,8 +8,8 @@ import pickle
 from train_model import run_training_process # train_model.py'deki eğitim fonksiyonunu import ettik
 
 # --- Konfigürasyon ---
-TELEGRAM_TOKEN = "7744478523:AAEtRJar6uF7m0cxKfQh7r7TltXYxWwtmm0" 
-CHAT_ID = "1009868232" 
+TELEGRAM_TOKEN = "7744478523:AAEtRJar6uF7m0cxKfQh7r7TltXYxWwtmm0" # BURAYA KENDİ TELEGRAM BOT TOKEN'INIZI YAPIŞTIRIN
+CHAT_ID = "1009868232" # BURAYA KENDİ TELEGRAM KANAL VEYA SOHBET ID'NİZİ YAPIŞTIRIN
 
 # Analiz için eşik değerleri
 MIN_HACIM_USDT = 50_000_000  # Minimum 24s Hacim (50 Milyon USDT)
@@ -21,15 +21,14 @@ TARAMA_SIKLIGI_SANİYE = TARAMA_SIKLIGI_DAKIKA * 60
 
 # Mum grafiği zaman dilimi ve çekilecek mum sayısı
 CANDLESTICK_INTERVAL = "1h" 
-NUM_CANDLES_TO_FETCH = 20 
+# ML tahmini ve gösterge hesaplamaları için yeterli geçmiş mum gerekli
+NUM_CANDLES_TO_FETCH = 50 
 
 # Yapay Zeka Modeli Dosyası
 MODEL_PATH = 'price_direction_model.pkl'
 ai_model = None 
 
-# Otomatik eğitim konfigürasyonu
-AUTO_TRAIN_INTERVAL_DAYS = 2 # Her 2 günde bir eğitim
-LAST_TRAIN_TIME_FILE = 'last_train_time.txt'
+# Otomatik eğitim konfigürasyonu (Render ücretsiz planı için basitleştirildi)
 TRAIN_SYMBOL = "BTCUSDT" # AI modeli için eğitim yapılacak sembol
 TRAIN_INTERVAL = "1h"    # AI modeli için eğitim yapılacak mum aralığı
 TRAIN_LIMIT = 1000       # AI modeli eğitimi için çekilecek mum sayısı
@@ -59,27 +58,6 @@ def load_ai_model(model_path):
         print(f"Yapay zeka modeli yüklenirken hata oluştu: {e}")
         return None
 
-def get_last_train_time():
-    """Son eğitim zamanını dosyadan okur."""
-    try:
-        with open(LAST_TRAIN_TIME_FILE, 'r') as f:
-            timestamp_str = f.read().strip()
-            return datetime.fromisoformat(timestamp_str)
-    except FileNotFoundError:
-        return None
-    except Exception as e:
-        print(f"Son eğitim zamanı okunurken hata oluştu: {e}")
-        return None
-
-def save_last_train_time(timestamp):
-    """Son eğitim zamanını dosyaya kaydeder."""
-    try:
-        with open(LAST_TRAIN_TIME_FILE, 'w') as f:
-            f.write(timestamp.isoformat())
-        print(f"Son eğitim zamanı kaydedildi: {timestamp}")
-    except Exception as e:
-        print(f"Son eğitim zamanı kaydedilirken hata oluştu: {e}")
-
 # --- Binance API'den Veri Çekme Yardımcı Fonksiyonu ---
 def _fetch_klines_and_ticker(base_url, market_type, symbol_suffix="USDT"):
     """Belirtilen Binance API base_url'inden klines ve 24hr ticker verilerini çeker."""
@@ -107,7 +85,7 @@ def _fetch_klines_and_ticker(base_url, market_type, symbol_suffix="USDT"):
             klines_response.raise_for_status()
             klines_data = klines_response.json()
             
-            if symbol in tickers_data and klines_data and len(klines_data) == NUM_CANDLES_TO_FETCH: 
+            if symbol in tickers_data and klines_data and len(klines_data) == NUM_CANDLES_TO_FETCH:
                 ticker_info = tickers_data[symbol]
                 market_data[symbol] = {
                     "market_type": market_type, 
@@ -151,13 +129,11 @@ def binance_tum_veri_cek_spot_futures():
 
 # --- Mum Formasyonu Tanıma Fonksiyonları ---
 # Bu fonksiyonlar önceki koddan aynen korunmuştur.
-# Lütfen bu fonksiyonları main.py dosyanıza kopyalayıp yapıştırın.
 
 def is_doji(candles):
     """Doji mumu formasyonunu tanır."""
     if not candles:
         return False
-    
     last_candle = candles[-1]
     body = abs(last_candle["close"] - last_candle["open"])
     candle_range = last_candle["high"] - last_candle["low"]
@@ -310,8 +286,8 @@ def extract_features_for_prediction(klines_data):
     Canlı mum verilerinden modelin beklediği özellikleri çıkarır.
     Bu fonksiyon, train_model.py'deki prepare_data_for_training ile AYNI MANTIKTA olmalı.
     """
-    if len(klines_data) < 10: 
-        print(f"Uyarı: ML tahmini için yeterli mum verisi yok ({len(klines_data)} yerine en az 10 gerekli).")
+    if len(klines_data) < 26: 
+        print(f"Uyarı: ML tahmini için yeterli mum verisi yok ({len(klines_data)} yerine en az 26 gerekli).")
         return None
 
     df = pd.DataFrame(klines_data)
@@ -343,49 +319,60 @@ def extract_features_for_prediction(klines_data):
     features['volatility_5'] = df['close'].rolling(window=5).std().fillna(0)
     features['volatility_10'] = df['close'].rolling(window=10).std().fillna(0)
 
-    final_features = features.iloc[-1:].drop(columns=['candle_range'], errors='ignore')
-    
-    final_features = final_features.replace([np.inf, -np.inf], np.nan).fillna(0)
+    # --- Yeni Gelişmiş Özellikler (Teknik Göstergeler) ---
+    # RSI
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss.replace(0, 1e-9)
+    features['rsi'] = 100 - (100 / (1 + rs))
+    features['rsi'] = features['rsi'].fillna(0)
 
-    return final_features
+    # MACD
+    exp12 = df['close'].ewm(span=12, adjust=False).mean()
+    exp26 = df['close'].ewm(span=26, adjust=False).mean()
+    features['macd'] = exp12 - exp26
+    features['macd_signal'] = features['macd'].ewm(span=9, adjust=False).mean()
+    features['macd_hist'] = features['macd'] - features['macd_signal']
+    features[['macd', 'macd_signal', 'macd_hist']] = features[['macd', 'macd_signal', 'macd_hist']].fillna(0)
+
+    # Bollinger Bantları
+    window_bb = 20
+    num_std_dev_bb = 2
+    features['bb_middle'] = df['close'].rolling(window=window_bb).mean()
+    std_dev_bb = df['close'].rolling(window=window_bb).std()
+    features['bb_upper'] = features['bb_middle'] + (std_dev_bb * num_std_dev_bb)
+    features['bb_lower'] = features['bb_middle'] - (std_dev_bb * num_std_dev_bb)
+    features['bb_position'] = (df['close'] - features['bb_lower']) / (features['bb_upper'] - features['bb_lower']).replace(0, 1e-9)
+    features['bb_width'] = (features['bb_upper'] - features['bb_lower']) / features['bb_middle'].replace(0, 1e-9)
+    features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']] = features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']].fillna(0)
+
+    final_features_df = features.iloc[-1:].drop(columns=['candle_range'], errors='ignore')
+
+    final_features_df = final_features_df.replace([np.inf, -np.inf], np.nan).fillna(0)
+
+    return final_features_df
 
 
 # --- Ana Analiz Fonksiyonu ---
 def piyasayi_tara_ve_analiz_et():
     """Binance piyasalarını tarar, yükseliş potansiyeli olan formasyonları ve ML tahminlerini bulur ve sinyal gönderir."""
-    global ai_model # ai_model'i global olarak kullanacağız
+    global ai_model 
 
-    # Otomatik yeniden eğitim kontrolü
-    last_train_time = get_last_train_time()
     current_time = datetime.now()
 
-    if last_train_time is None:
-        print("İlk eğitim zamanı bulunamadı. Yapay zeka modeli ilk kez eğitiliyor...")
-        telegram_sinyal_gonder(f"⏳ **Yapay Zeka Modeli İlk Kez Eğitiliyor!** ⏳\nBu işlem biraz sürebilir.")
+    # Model yüklü değilse (bot yeni başladıysa veya önceki yüklemede hata oluştuysa) eğitimi tetikle
+    if ai_model is None:
+        print("Yapay zeka modeli yüklü değil. Model eğitimi başlatılıyor...")
+        telegram_sinyal_gonder(f"⏳ **Yapay Zeka Modeli Eğitiliyor/Yeniden Eğitiliyor!** ⏳\nBu işlem biraz sürebilir.")
         if run_training_process(TRAIN_SYMBOL, TRAIN_INTERVAL, TRAIN_LIMIT):
-            save_last_train_time(current_time)
-            global ai_model # Modeli yeniden yükle
+            global ai_model # Eğitilen yeni modeli yükle
             ai_model = load_ai_model(MODEL_PATH)
             telegram_sinyal_gonder(f"✅ **Yapay Zeka Modeli Başarıyla Eğitildi ve Yüklendi!** ✅")
         else:
-            telegram_sinyal_gonder(f"❌ **Yapay Zeka Modeli Eğitimi Başarısız Oldu!** ❌")
+            telegram_sinyal_gonder(f"❌ **Yapay Zeka Modeli Eğitimi Başarısız Oldu!** ❌\nAI tahmini devre dışı kalacak.")
             print("Eğitim başarısız, AI tahmini devre dışı kalacak.")
             ai_model = None # Hata durumunda modeli None yap
-    elif (current_time - last_train_time) >= timedelta(days=AUTO_TRAIN_INTERVAL_DAYS):
-        print(f"Son eğitimden bu yana {AUTO_TRAIN_INTERVAL_DAYS} gün geçti. Yapay zeka modeli yeniden eğitiliyor...")
-        telegram_sinyal_gonder(f"🔄 **Yapay Zeka Modeli Otomatik Olarak Yeniden Eğitiliyor!** 🔄\nSon eğitim: {last_train_time.strftime('%d-%m-%Y %H:%M')}\nBu işlem biraz sürebilir.")
-        if run_training_process(TRAIN_SYMBOL, TRAIN_INTERVAL, TRAIN_LIMIT):
-            save_last_train_time(current_time)
-            global ai_model # Modeli yeniden yükle
-            ai_model = load_ai_model(MODEL_PATH)
-            telegram_sinyal_gonder(f"✅ **Yapay Zeka Modeli Yeniden Eğitildi ve Yüklendi!** ✅")
-        else:
-            telegram_sinyal_gonder(f"❌ **Yapay Zeka Modeli Yeniden Eğitimi Başarısız Oldu!** ❌")
-            print("Yeniden eğitim başarısız, önceki model kullanılmaya devam edecek veya AI tahmini devre dışı kalacak.")
-            # Hata durumunda ai_model'i tekrar yüklemeye çalışmayabiliriz veya önceki modeli koruyabiliriz.
-            # Basitlik adına şu an için hata durumunda AI tahmini devre dışı kalır.
-            ai_model = None
-
 
     print(f"\n--- {current_time.strftime('%Y-%m-%d %H:%M:%S')} - Piyasa Taraması Başladı ---")
     
@@ -417,6 +404,11 @@ def piyasayi_tara_ve_analiz_et():
                 features_for_pred = extract_features_for_prediction(klines)
                 if features_for_pred is not None and not features_for_pred.empty:
                     try:
+                        if hasattr(ai_model, 'feature_names_in_') and \
+                           not features_for_pred.columns.equals(pd.Index(ai_model.feature_names_in_)):
+                            print(f"Uyarı: Özellik sütunları uyumsuz! Sembol: {symbol}. Yeniden sıralanıyor...")
+                            features_for_pred = features_for_pred[ai_model.feature_names_in_]
+
                         prediction = ai_model.predict(features_for_pred)[0]
                         prediction_proba = ai_model.predict_proba(features_for_pred)[0] 
                         
@@ -510,21 +502,23 @@ if __name__ == "__main__":
         print("HATA: Lütfen TELEGRAM_TOKEN ve CHAT_ID'yi main.py dosyası içinde kendi bilgilerinizle güncelleyin.")
         exit() 
 
-    # Bot ilk çalıştığında modeli yükle
+    # Bot ilk başladığında veya yeniden başlatıldığında modeli yüklemeye çalışır.
+    # Eğer model.pkl dosyası bulunamazsa, piyasayi_tara_ve_analiz_et içindeki otomatik eğitim onu oluşturur.
     ai_model = load_ai_model(MODEL_PATH)
-    if ai_model is None:
-        print("Yapay zeka modeli ilk çalıştırmada yüklenemedi. Otomatik eğitim kontrol edilecek.")
-        # Bu durumda piyasayi_tara_ve_analiz_et içindeki ilk eğitim tetiklenecek.
-        
+    if ai_model is None: # İlk yükleme başarısız olursa veya model yoksa
+        print("Yapay zeka modeli ilk çalıştırmada yüklenemedi. İlk eğitim veya yeniden eğitim otomatik olarak tetiklenecektir.")
+        # Piyasa tarama fonksiyonu ilk yüklemeyi veya yeniden eğitimi yönetecek
+
     baslangic_mesaji = f"🚀 **Kripto Formasyon & AI Botu Başlatıldı (Spot & Futures)!** 🚀\nTarama her {TARAMA_SIKLIGI_DAKIKA} dakikada bir yapılacak. Mum aralığı: {CANDLESTICK_INTERVAL}"
-    if ai_model: # Başlangıçta model yüklendiyse
+    if ai_model: 
         baslangic_mesaji += "\nYapay Zeka tahmini aktif!"
     telegram_sinyal_gonder(baslangic_mesaji)
     print("Bot başlatıldı ve Telegram'a bildirim gönderildi.")
 
-    # Sonsuz döngü ile belirli aralıklarla tarama yap
     while True:
         print(f"{TARAMA_SIKLIGI_DAKIKA} dakika sonraki tarama için bekleniyor...")
         time.sleep(TARAMA_SIKLIGI_SANİYE)
-        # Her tarama döngüsünde piyasayı tara ve analiz et (bu aynı zamanda otomatik eğitimi de kontrol eder)
+        # Her tarama döngüsünde piyasayı tara ve analiz et.
+        # Bu fonksiyon aynı zamanda AI modelinin yüklü olup olmadığını kontrol eder ve
+        # yüklü değilse eğitimi tetikler.
         piyasayi_tara_ve_analiz_et()
