@@ -22,7 +22,7 @@ TARAMA_SIKLIGI_SANİYE = TARAMA_SIKLIGI_DAKIKA * 60
 # Mum grafiği zaman dilimi ve çekilecek mum sayısı
 CANDLESTICK_INTERVAL = "1h" 
 # ML tahmini ve gösterge hesaplamaları için yeterli geçmiş mum gerekli
-# En uzun periyot EMA 200 olduğu için en az 200 mum gerekli + buffer = 250 ideal
+# En uzun periyot EMA 200 olduğu için en az 200 mum + buffer = 250 ideal
 NUM_CANDLES_TO_FETCH = 250 
 
 # Kalıcı disk yolu (Render'da belirlediğiniz Mount Path ile aynı olmalı)
@@ -36,12 +36,14 @@ LAST_TRAIN_TIME_FILE = os.path.join(PERSISTENT_STORAGE_PATH, 'last_train_time.tx
 ai_model = None 
 
 # Otomatik eğitim konfigürasyonu
-AUTO_TRAIN_INTERVAL_DAYS = 2 # Her 2 günde bir eğitim
+# Her dağıtımda eğitimi zorlamak için bu değeri 0'a çektik.
+# Eğitim yapıldıktan sonra tekrar 2 olarak ayarlayabilirsiniz.
+AUTO_TRAIN_INTERVAL_DAYS = 0 # HER ZAMAN EĞİTİMİ TETİKLE!
 TRAIN_SYMBOL = "BTCUSDT" 
 TRAIN_INTERVAL = "1h"    
 TRAIN_LIMIT = 1000       
 
-# Tüm özellik sütunlarının doğru ve tutarlı sırası - YENİ ÖZELLİKLER EKLENDİ!
+# Tüm özellik sütunlarının doğru ve tutarlı sırası
 FEATURE_COLUMNS = [
     'body_size', 'upper_shadow', 'lower_shadow', 'candle_range',
     'body_to_range_ratio', 'upper_shadow_to_body_ratio', 'lower_shadow_to_body_ratio',
@@ -51,13 +53,12 @@ FEATURE_COLUMNS = [
     'sma_5', 'sma_10', 'volatility_5', 'volatility_10',
     'rsi', 'macd', 'macd_signal', 'macd_hist',
     'bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width',
-    # --- YENİ EKLENEN ÖZELLİKLER ---
-    'ema_20', 'ema_50', 'ema_200', # Üstel Hareketli Ortalamalar
-    'ema_20_slope', # EMA eğimi
-    'atr', # Ortalama Gerçek Aralık (Volatilite)
-    'roc_14', # Değişim Oranı (Momentum)
-    'dist_from_5_high', 'dist_from_5_low', # Son 5 mumun zirve/diplerine göre uzaklık
-    'dist_from_20_high', 'dist_from_20_low', # Son 20 mumun zirve/diplerine göre uzaklık
+    'ema_20', 'ema_50', 'ema_200', 
+    'ema_20_slope', 
+    'atr', 
+    'roc_14', 
+    'dist_from_5_high', 'dist_from_5_low', 
+    'dist_from_20_high', 'dist_from_20_low', 
 ]
 
 # --- Yardımcı Fonksiyonlar ---
@@ -131,7 +132,7 @@ def _fetch_klines_and_ticker(base_url, market_type, symbol_suffix="USDT"):
             klines_params = {
                 "symbol": symbol,
                 "interval": CANDLESTICK_INTERVAL,
-                "limit": NUM_CANDLES_TO_FETCH # Çekilecek mum sayısı
+                "limit": NUM_CANDLES_TO_FETCH 
             }
             klines_response = requests.get(klines_url, params=klines_params)
             klines_response.raise_for_status()
@@ -408,22 +409,48 @@ def piyasayi_tara_ve_analiz_et():
 
     current_time = datetime.now()
 
-    # Model yüklü değilse (bot yeni başladıysa veya önceki yüklemede hata oluştuysa) eğitimi tetikle
-    if ai_model is None:
-        print("Yapay zeka modeli yüklü değil. Model eğitimi başlatılıyor...")
+    # Model yüklü değilse VEYA eğitilmesi gerekiyorsa (2 gün geçtiyse) eğitimi tetikle
+    last_train_time = get_last_train_time()
+    
+    should_train = False
+    if ai_model is None: # Model bellekte yüklü değilse (ilk başlangıç veya önceki hata)
+        print("Yapay zeka modeli bellekte yüklü değil. Yüklü model dosyası kontrol ediliyor...")
+        if not os.path.exists(MODEL_PATH): # Kalıcı diskte model dosyası yoksa
+            print(f"Model dosyası '{MODEL_PATH}' bulunamadı. Eğitim tetikleniyor.")
+            should_train = True
+        else: # Model dosyası varsa yükle
+            ai_model = load_ai_model(MODEL_PATH)
+            if ai_model is None: # Yükleme başarısız olursa eğitim tetikle
+                print("Yüklü model dosyası bozuk veya yüklenemedi. Eğitim tetikleniyor.")
+                should_train = True
+    
+    # Model yüklü ise ve eğitim süresi dolmuşsa
+    if ai_model is not None and last_train_time:
+        if (current_time - last_train_time) > timedelta(days=AUTO_TRAIN_INTERVAL_DAYS):
+            print(f"Son eğitim {AUTO_TRAIN_INTERVAL_DAYS} günden daha eski. Yeniden eğitim tetikleniyor.")
+            should_train = True
+        else:
+            print(f"Son eğitim {last_train_time.strftime('%Y-%m-%d %H:%M:%S')} tarihinde yapılmış. Yeniden eğitim gerekli değil.")
+    elif ai_model is not None and last_train_time is None: # Model yüklü ama zaman dosyası yoksa (ilk kez kalıcı disk ile başlatma)
+        print("Model yüklü ancak son eğitim zamanı bulunamadı. İlk eğitim tetikleniyor.")
+        should_train = True # İlk kez kalıcı disk ile çalışırken zamanı kaydetmek için eğit.
+
+    if should_train:
+        print("Yapay zeka modeli eğitimi başlatılıyor...")
         telegram_sinyal_gonder(f"⏳ **Yapay Zeka Modeli Eğitiliyor/Yeniden Eğitiliyor!** ⏳\nBu işlem biraz sürebilir.")
         
         success = run_training_process(TRAIN_SYMBOL, TRAIN_INTERVAL, TRAIN_LIMIT) 
         
         if success:
-            ai_model = load_ai_model(MODEL_PATH) 
+            ai_model = load_ai_model(MODEL_PATH) # Eğitilen yeni modeli yükle
+            save_last_train_time(current_time) # Başarılı eğitim sonrası zamanı kaydet
             telegram_sinyal_gonder(f"✅ **Yapay Zeka Modeli Başarıyla Eğitildi ve Yüklendi!** ✅")
         else:
             telegram_sinyal_gonder(f"❌ **Yapay Zeka Modeli Eğitimi Başarısız Oldu!** ❌\nAI tahmini devre dışı kalacak.")
             print("Eğitim başarısız, AI tahmini devre dışı kalacak.")
             ai_model = None 
 
-    print(f"\n--- {current_time.strftime('%Y-%m-%d %H:%M:%S')} - Piyasa Taraması Başladı ---")
+    print(f"\n--- {current_time.strftime('%Y-%m-%d %H:%M:%S')} - Piyasa Taraması Başlandı ---")
     
     potansiyel_adaylar = []
 
@@ -440,9 +467,7 @@ def piyasayi_tara_ve_analiz_et():
             fiyat_degisim_yuzde = data["priceChangePercent"]
             klines = data["klines"]
 
-            # Yeni eklenen göstergeler için yeterli mum verisi olduğundan emin olun
-            # En uzun periyot EMA 200, dolayısıyla en az 200 mum olmalı.
-            if len(klines) < 200 or \
+            if len(klines) < NUM_CANDLES_TO_FETCH or \
                hacim_24s < MIN_HACIM_USDT or \
                abs(fiyat_degisim_yuzde) < MIN_FIYAT_DEGISIM_YUZDE:
                 continue
@@ -551,9 +576,31 @@ if __name__ == "__main__":
     # Render kalıcı diskinin klasörünün mevcut olduğundan emin olun
     os.makedirs(PERSISTENT_STORAGE_PATH, exist_ok=True)
 
+    # Bot ilk çalıştığında model yüklenemezse veya eğitim süresi dolduysa eğitim tetiklenecek.
+    # AUTO_TRAIN_INTERVAL_DAYS = 0 ayarı sayesinde her deployda eğitim tetiklenecek.
     ai_model = load_ai_model(MODEL_PATH)
-    if ai_model is None: 
-        print("Yapay zeka modeli ilk çalıştırmada yüklenemedi. İlk eğitim veya yeniden eğitim otomatik olarak tetiklenecektir.")
+    last_train_time = get_last_train_time()
+    current_time = datetime.now()
+
+    should_train_on_start = False
+    if ai_model is None: # Model hiç yüklenememişse (ilk defa veya dosya bozuksa)
+        should_train_on_start = True
+    elif last_train_time is None: # Model yüklü ama zaman damgası yoksa (ilk defa kalıcı diskle)
+        should_train_on_start = True
+    elif (current_time - last_train_time) > timedelta(days=AUTO_TRAIN_INTERVAL_DAYS):
+        should_train_on_start = True
+
+    if should_train_on_start:
+        print("Bot başlatılırken yapay zeka modeli eğitimi/yeniden eğitimi tetikleniyor...")
+        telegram_sinyal_gonder(f"⏳ **Yapay Zeka Modeli Eğitiliyor/Yeniden Eğitiliyor!** ⏳\nBu işlem biraz sürebilir.")
+        success = run_training_process(TRAIN_SYMBOL, TRAIN_INTERVAL, TRAIN_LIMIT)
+        if success:
+            ai_model = load_ai_model(MODEL_PATH)
+            save_last_train_time(current_time)
+            telegram_sinyal_gonder(f"✅ **Yapay Zeka Modeli Başarıyla Eğitildi ve Yüklendi!** ✅")
+        else:
+            telegram_sinyal_gonder(f"❌ **Yapay Zeka Modeli Eğitimi Başarısız Oldu!** ❌\nAI tahmini devre dışı kalacak.")
+            ai_model = None
 
     baslangic_mesaji = f"🚀 **Kripto Formasyon & AI Botu Başlatıldı (Spot & Futures)!** 🚀\nTarama her {TARAMA_SIKLIGI_DAKIKA} dakikada bir yapılacak. Mum aralığı: {CANDLESTICK_INTERVAL}"
     if ai_model: 
