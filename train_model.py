@@ -1,4 +1,4 @@
-# train_model.py (Refactored for auto-training & Advanced Features)
+# train_model.py
 import requests
 import pandas as pd
 import numpy as np
@@ -17,6 +17,18 @@ MODEL_PATH = 'price_direction_model.pkl'
 
 # Hedef Etiketleme Eşiği (yükseliş tanımı için)
 PRICE_CHANGE_THRESHOLD = 0.005 # %0.5'ten fazla yükseliş ise 1, değilse 0
+
+# Tüm özellik sütunlarının doğru ve tutarlı sırası
+FEATURE_COLUMNS = [
+    'body_size', 'upper_shadow', 'lower_shadow', 'candle_range',
+    'body_to_range_ratio', 'upper_shadow_to_body_ratio', 'lower_shadow_to_body_ratio',
+    'high_low_ratio', 'close_to_open_ratio',
+    'volume_change_pct_1', 'volume_change_pct_3', 'volume_change_pct_5',
+    'price_change_pct_1', 'price_change_pct_3', 'price_change_pct_5',
+    'sma_5', 'sma_10', 'volatility_5', 'volatility_10',
+    'rsi', 'macd', 'macd_signal', 'macd_hist',
+    'bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width'
+]
 
 # --- Veri Çekme Fonksiyonu (Geçmiş Mum Verileri İçin) ---
 def get_historical_klines(symbol, interval, limit):
@@ -88,16 +100,14 @@ def prepare_data_for_training(df):
 
     # --- Yeni Gelişmiş Özellikler (Teknik Göstergeler) ---
     # 6. RSI (Relative Strength Index)
-    # Varsayılan periyot 14
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss.replace(0, 1e-9)
     features['rsi'] = 100 - (100 / (1 + rs))
-    features['rsi'] = features['rsi'].fillna(0) # NaN değerleri doldur
+    features['rsi'] = features['rsi'].fillna(0)
 
     # 7. MACD (Moving Average Convergence Divergence)
-    # Varsayılan hızlı EMA 12, yavaş EMA 26, sinyal hattı 9
     exp12 = df['close'].ewm(span=12, adjust=False).mean()
     exp26 = df['close'].ewm(span=26, adjust=False).mean()
     features['macd'] = exp12 - exp26
@@ -106,29 +116,25 @@ def prepare_data_for_training(df):
     features[['macd', 'macd_signal', 'macd_hist']] = features[['macd', 'macd_signal', 'macd_hist']].fillna(0)
 
     # 8. Bollinger Bantları (BB)
-    # Varsayılan periyot 20, standart sapma 2
     window = 20
     num_std_dev = 2
     features['bb_middle'] = df['close'].rolling(window=window).mean()
     std_dev = df['close'].rolling(window=window).std()
     features['bb_upper'] = features['bb_middle'] + (std_dev * num_std_dev)
     features['bb_lower'] = features['bb_middle'] - (std_dev * num_std_dev)
-    # Fiyatın bantlara göre konumu
     features['bb_position'] = (df['close'] - features['bb_lower']) / (features['bb_upper'] - features['bb_lower']).replace(0, 1e-9)
     features['bb_width'] = (features['bb_upper'] - features['bb_lower']) / features['bb_middle'].replace(0, 1e-9)
     features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']] = features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']].fillna(0)
 
     # --- Hedef Etiketleme (Geliştirilmiş Kalite) ---
-    # Bir sonraki mumun kapanışının mevcut mumun kapanışından belirlenen eşik kadar yüksek mi?
     df['future_price_change'] = (df['close'].shift(-1) - df['close']) / df['close']
     features['target'] = (df['future_price_change'] > PRICE_CHANGE_THRESHOLD).astype(int)
     
-    # NaN veya sonsuz değerleri temizle
-    # En uzun rolling window 26 (MACD) veya 20 (BB) olduğu için ilk 26 satırda NaN olabilir.
     features = features.dropna()
     features = features.replace([np.inf, -np.inf], np.nan).fillna(0)
 
-    X = features.drop('target', axis=1)
+    # Önemli: Özellik sütunlarını FEATURE_COLUMNS listesine göre sırala
+    X = features[FEATURE_COLUMNS] # Sadece tanımlı sütunları ve sırasını al
     y = features['target']
     
     return X, y
@@ -142,9 +148,6 @@ def train_and_save_model(X, y, model_path=MODEL_PATH):
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
-    # --- Model Mimarisinin Optimizasyonu (Elle Ayar) ---
-    # n_estimators: Ağaç sayısı artırıldı. Daha karmaşık ilişkileri öğrenmeye yardımcı olur.
-    # max_depth: Ağaçların maksimum derinliği. Aşırı uyumu azaltmaya yardımcı olur.
     model = RandomForestClassifier(n_estimators=300, max_depth=10, random_state=42, class_weight='balanced', n_jobs=-1)
     model.fit(X_train, y_train)
 
@@ -173,16 +176,17 @@ def run_training_process(symbol=TRAIN_SYMBOL, interval=TRAIN_INTERVAL, limit=TRA
         print("Veriler çekildi, özellikler çıkarılıyor ve etiketleniyor...")
         X, y = prepare_data_for_training(historical_df)
         
-        if X is not None and y is not None and not X.empty and not y.empty:
-            print("Model eğitiliyor ve kaydediliyor...")
-            if train_and_save_model(X, y):
-                print("Yapay Zeka Modeli Eğitimi Başarıyla Tamamlandı.")
-                return True
-            else:
-                print("Model Eğitimi Başarısız Oldu.")
-                return False
-        else:
+        # Eğer X veya y boşsa (örn. yeterli veri veya etiketlenmiş örnek yoksa)
+        if X is None or y is None or X.empty or y.empty:
             print("Veri hazırlığı sırasında problem oluştu (boş özellik/hedef), eğitim yapılamadı.")
+            return False
+
+        print("Model eğitiliyor ve kaydediliyor...")
+        if train_and_save_model(X, y):
+            print("Yapay Zeka Modeli Eğitimi Başarıyla Tamamlandı.")
+            return True
+        else:
+            print("Model Eğitimi Başarısız Oldu.")
             return False
     else:
         print("Geçmiş veri çekilemedi veya boş geldi, eğitim iptal edildi.")
