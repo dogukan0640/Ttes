@@ -21,7 +21,9 @@ TARAMA_SIKLIGI_SANİYE = TARAMA_SIKLIGI_DAKIKA * 60
 
 # Mum grafiği zaman dilimi ve çekilecek mum sayısı
 CANDLESTICK_INTERVAL = "1h" 
-NUM_CANDLES_TO_FETCH = 50 
+# ML tahmini ve gösterge hesaplamaları için yeterli geçmiş mum gerekli
+# En uzun periyot EMA 200 olduğu için en az 200 mum gerekli + buffer = 250 ideal
+NUM_CANDLES_TO_FETCH = 250 
 
 # Kalıcı disk yolu (Render'da belirlediğiniz Mount Path ile aynı olmalı)
 PERSISTENT_STORAGE_PATH = "/opt/render/persist" 
@@ -39,7 +41,7 @@ TRAIN_SYMBOL = "BTCUSDT"
 TRAIN_INTERVAL = "1h"    
 TRAIN_LIMIT = 1000       
 
-# Tüm özellik sütunlarının doğru ve tutarlı sırası
+# Tüm özellik sütunlarının doğru ve tutarlı sırası - YENİ ÖZELLİKLER EKLENDİ!
 FEATURE_COLUMNS = [
     'body_size', 'upper_shadow', 'lower_shadow', 'candle_range',
     'body_to_range_ratio', 'upper_shadow_to_body_ratio', 'lower_shadow_to_body_ratio',
@@ -48,7 +50,14 @@ FEATURE_COLUMNS = [
     'price_change_pct_1', 'price_change_pct_3', 'price_change_pct_5',
     'sma_5', 'sma_10', 'volatility_5', 'volatility_10',
     'rsi', 'macd', 'macd_signal', 'macd_hist',
-    'bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width'
+    'bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width',
+    # --- YENİ EKLENEN ÖZELLİKLER ---
+    'ema_20', 'ema_50', 'ema_200', # Üstel Hareketli Ortalamalar
+    'ema_20_slope', # EMA eğimi
+    'atr', # Ortalama Gerçek Aralık (Volatilite)
+    'roc_14', # Değişim Oranı (Momentum)
+    'dist_from_5_high', 'dist_from_5_low', # Son 5 mumun zirve/diplerine göre uzaklık
+    'dist_from_20_high', 'dist_from_20_low', # Son 20 mumun zirve/diplerine göre uzaklık
 ]
 
 # --- Yardımcı Fonksiyonlar ---
@@ -104,7 +113,7 @@ def save_last_train_time(timestamp):
 # --- Binance API'den Veri Çekme Yardımcı Fonksiyonu ---
 def _fetch_klines_and_ticker(base_url, market_type, symbol_suffix="USDT"):
     """Belirtilen Binance API base_url'inden klines ve 24hr ticker verilerini çeker."""
-    market_data = {}
+    all_symbols = {}
     try:
         tickers_url = f"{base_url}ticker/24hr"
         tickers_response = requests.get(tickers_url)
@@ -122,7 +131,7 @@ def _fetch_klines_and_ticker(base_url, market_type, symbol_suffix="USDT"):
             klines_params = {
                 "symbol": symbol,
                 "interval": CANDLESTICK_INTERVAL,
-                "limit": NUM_CANDLES_TO_FETCH
+                "limit": NUM_CANDLES_TO_FETCH # Çekilecek mum sayısı
             }
             klines_response = requests.get(klines_url, params=klines_params)
             klines_response.raise_for_status()
@@ -130,7 +139,7 @@ def _fetch_klines_and_ticker(base_url, market_type, symbol_suffix="USDT"):
             
             if symbol in tickers_data and klines_data and len(klines_data) == NUM_CANDLES_TO_FETCH:
                 ticker_info = tickers_data[symbol]
-                market_data[symbol] = {
+                all_symbols[symbol] = {
                     "market_type": market_type, 
                     "lastPrice": float(ticker_info.get("lastPrice", 0)),
                     "quoteVolume": float(ticker_info.get("quoteVolume", 0)),
@@ -138,7 +147,7 @@ def _fetch_klines_and_ticker(base_url, market_type, symbol_suffix="USDT"):
                     "klines": []
                 }
                 for kline in klines_data:
-                    market_data[symbol]["klines"].append({
+                    all_symbols[symbol]["klines"].append({
                         "open": float(kline[1]),
                         "high": float(kline[2]),
                         "low": float(kline[3]),
@@ -154,7 +163,7 @@ def _fetch_klines_and_ticker(base_url, market_type, symbol_suffix="USDT"):
             print(f"Hata: {market_type} Sembol {symbol} mum verileri işlenirken hata oluştu: {e}")
             continue
             
-    return market_data
+    return all_symbols
 
 def binance_tum_veri_cek_spot_futures():
     """Hem Binance Spot hem de Futures USDT pariteleri için veri çeker."""
@@ -171,58 +180,47 @@ def binance_tum_veri_cek_spot_futures():
     return all_market_data
 
 # --- Mum Formasyonu Tanıma Fonksiyonları ---
-# Bu fonksiyonlar önceki koddan aynen korunmuştur.
-
 def is_doji(candles):
     """Doji mumu formasyonunu tanır."""
-    if not candles:
-        return False
+    if not candles: return False
     last_candle = candles[-1]
     body = abs(last_candle["close"] - last_candle["open"])
     candle_range = last_candle["high"] - last_candle["low"]
-    if candle_range == 0:
-        return False
+    if candle_range == 0: return False
     return body < (candle_range * 0.1) 
 
 def is_hammer(candles):
     """Çekiç mumu formasyonunu tanır."""
-    if len(candles) < 1:
-        return False
+    if len(candles) < 1: return False
     c = candles[-1] 
     body = abs(c["close"] - c["open"])
     upper_shadow = c["high"] - max(c["open"], c["close"])
     lower_shadow = min(c["open"], c["close"]) - c["low"]
-    if body > 0 and lower_shadow >= (body * 2) and upper_shadow < (body * 0.5):
-        return True
+    if body > 0 and lower_shadow >= (body * 2) and upper_shadow < (body * 0.5): return True
     return False
 
 def is_inverted_hammer(candles):
     """Ters Çekiç mumu formasyonunu tanır."""
-    if len(candles) < 1:
-        return False
+    if len(candles) < 1: return False
     c = candles[-1] 
     body = abs(c["close"] - c["open"])
     upper_shadow = c["high"] - max(c["open"], c["close"])
     lower_shadow = min(c["open"], c["close"]) - c["low"]
-    if body > 0 and upper_shadow >= (body * 2) and lower_shadow < (body * 0.5):
-        return True
+    if body > 0 and upper_shadow >= (body * 2) and lower_shadow < (body * 0.5): return True
     return False
 
 def is_bullish_engulfing(candles):
     """Boğa Yutan Boğa formasyonunu tanır."""
-    if len(candles) < 2:
-        return False
+    if len(candles) < 2: return False
     prev_c = candles[-2] 
     curr_c = candles[-1] 
     if prev_c["close"] < prev_c["open"] and curr_c["close"] > curr_c["open"]:
-        if curr_c["close"] >= prev_c["open"] and curr_c["open"] <= prev_c["close"]:
-            return True
+        if curr_c["close"] >= prev_c["open"] and curr_c["open"] <= prev_c["close"]: return True
     return False
 
 def is_morning_star(candles):
     """Sabah Yıldızı formasyonunu tanır."""
-    if len(candles) < 3:
-        return False
+    if len(candles) < 3: return False
     c1 = candles[-3] 
     c2 = candles[-2] 
     c3 = candles[-1] 
@@ -230,98 +228,74 @@ def is_morning_star(candles):
     is_c2_small_body = abs(c2["close"] - c2["open"]) < (c2["high"] - c2["low"]) * 0.3
     is_c3_bullish_long = c3["close"] > c3["open"] and (c3["close"] - c3["open"]) > (c3["high"] - c3["low"]) * 0.6
     c1_midpoint = (c1["open"] + c1["close"]) / 2
-    if is_c1_bearish_long and is_c2_small_body and is_c3_bullish_long and c3["close"] > c1_midpoint:
-        return True
+    if is_c1_bearish_long and is_c2_small_body and is_c3_bullish_long and c3["close"] > c1_midpoint: return True
     return False
 
 def is_three_white_soldiers(candles):
     """Üç Beyaz Asker formasyonunu tanır."""
-    if len(candles) < 3:
-        return False
+    if len(candles) < 3: return False
     c1 = candles[-3]
     c2 = candles[-2]
     c3 = candles[-1]
-    if not (c1["close"] > c1["open"] and c2["close"] > c2["open"] and c3["close"] > c3["open"]):
-        return False
-    if not (c2["close"] > c1["close"] and c3["close"] > c2["close"]):
-        return False
+    if not (c1["close"] > c1["open"] and c2["close"] > c2["open"] and c3["close"] > c3["open"]): return False
+    if not (c2["close"] > c1["close"] and c3["close"] > c2["close"]): return False
     if not (c2["open"] >= c1["open"] and c2["open"] <= c1["close"] and \
-            c3["open"] >= c2["open"] and c3["open"] <= c2["close"]):
-        return False
+            c3["open"] >= c2["open"] and c3["open"] <= c2["close"]): return False
     avg_range = sum([c["high"] - c["low"] for c in candles[-3:]]) / 3
     if not (abs(c1["close"] - c1["open"]) > avg_range * 0.3 and \
             abs(c2["close"] - c2["open"]) > avg_range * 0.3 and \
-            abs(c3["close"] - c3["open"]) > avg_range * 0.3):
-        return False
+            abs(c3["close"] - c3["open"]) > avg_range * 0.3): return False
     return True
 
 def is_piercing_pattern(candles):
     """Delici Mum Formasyonu'nu tanır."""
-    if len(candles) < 2:
-        return False
+    if len(candles) < 2: return False
     prev_c = candles[-2] 
     curr_c = candles[-1] 
-    if not (prev_c["close"] < prev_c["open"]):
-        return False
-    if not (curr_c["close"] > curr_c["open"]):
-        return False
-    if not (curr_c["open"] < prev_c["close"]):
-        return False
+    if not (prev_c["close"] < prev_c["open"]): return False
+    if not (curr_c["close"] > curr_c["open"]): return False
+    if not (curr_c["open"] < prev_c["close"]): return False
     midpoint_prev_c = (prev_c["open"] + prev_c["close"]) / 2
-    if not (curr_c["close"] > midpoint_prev_c and curr_c["close"] < prev_c["open"]):
-        return False
-    return True
+    if not (curr_c["close"] > midpoint_prev_c and curr_c["close"] < prev_c["open"]): return True
+    return False
 
 def is_bullish_harami(candles):
     """Boğa Harami formasyonunu tanır."""
-    if len(candles) < 2:
-        return False
+    if len(candles) < 2: return False
     prev_c = candles[-2] 
     curr_c = candles[-1] 
-    if not (prev_c["close"] < prev_c["open"] and abs(prev_c["close"] - prev_c["open"]) > (prev_c["high"] - prev_c["low"]) * 0.4):
-        return False
-    if not (curr_c["close"] > curr_c["open"] and abs(curr_c["close"] - curr_c["open"]) < (curr_c["high"] - curr_c["low"]) * 0.5):
-        return False
-    if not (curr_c["open"] > prev_c["close"] and curr_c["close"] < prev_c["open"]):
-        return False
-    return True
+    if not (prev_c["close"] < prev_c["open"] and abs(prev_c["close"] - prev_c["open"]) > (prev_c["high"] - prev_c["low"]) * 0.4): return False
+    if not (curr_c["close"] > curr_c["open"] and abs(curr_c["close"] - curr_c["open"]) < (curr_c["high"] - curr_c["low"]) * 0.5): return False
+    if not (curr_c["open"] > prev_c["close"] and curr_c["close"] < prev_c["open"]): return True
+    return False
 
 def is_three_inside_up(candles):
     """Üç İçeriye Yükseliş formasyonunu tanır."""
-    if len(candles) < 3:
-        return False
+    if len(candles) < 3: return False
     c1 = candles[-3] 
     c2 = candles[-2] 
     c3 = candles[-1] 
-    if not is_bullish_harami(candles[:-1] + [c2]): 
-        return False
-    if not (c3["close"] > c3["open"]):
-        return False
-    if not (c3["close"] > c1["open"]):
-        return False
-    return True
+    if not is_bullish_harami(candles[:-1] + [c2]): return False
+    if not (c3["close"] > c3["open"]): return False
+    if not (c3["close"] > c1["open"]): return True
+    return False
 
 def is_rising_three_methods(candles):
     """Yükselen Üç Metot formasyonunu tanır."""
-    if len(candles) < 5: 
-        return False
+    if len(candles) < 5: return False
     c1 = candles[-5] 
     c2 = candles[-4] 
     c3 = candles[-3] 
     c4 = candles[-2] 
     c5 = candles[-1] 
-    if not (c1["close"] > c1["open"] and abs(c1["close"] - c1["open"]) > (c1["high"] - c1["low"]) * 0.6):
-        return False
+    if not (c1["close"] > c1["open"] and abs(c1["close"] - c1["open"]) > (c1["high"] - c1["low"]) * 0.6): return False
     for c in [c2, c3, c4]:
         if not (c["close"] < c["open"] and \
                 abs(c["close"] - c["open"]) < (c["high"] - c["low"]) * 0.5 and \
-                c["high"] <= c1["high"] and c["low"] >= c1["low"]):
-            return False
-    if not (c5["close"] > c5["open"] and abs(c5["close"] - c5["open"]) > (c5["high"] - c5["low"]) * 0.6):
-        return False
-    if not (c5["open"] > c4["close"] and c5["close"] > c1["close"]):
-        return False
-    return True
+                c["high"] <= c1["high"] and c["low"] >= c1["low"]): return False
+    if not (c5["close"] > c5["open"] and abs(c5["close"] - c5["open"]) > (c5["high"] - c5["low"]) * 0.6): return False
+    if not (c5["open"] > c4["close"] and c5["close"] > c1["close"]): return True
+    return False
 
 # --- Özellik Mühendisliği (Tahmin için canlı veriden) ---
 def extract_features_for_prediction(klines_data):
@@ -329,8 +303,9 @@ def extract_features_for_prediction(klines_data):
     Canlı mum verilerinden modelin beklediği özellikleri çıkarır.
     Bu fonksiyon, train_model.py'deki prepare_data_for_training ile AYNI MANTIKTA olmalı.
     """
-    if len(klines_data) < 26: 
-        print(f"Uyarı: ML tahmini için yeterli mum verisi yok ({len(klines_data)} yerine en az 26 gerekli).")
+    # En uzun EMA 200 periyot gerektiriyor, ROC/ATR 14, BB 20 -> en az 200 mum + buffer
+    if len(klines_data) < 200: 
+        print(f"Uyarı: ML tahmini için yeterli mum verisi yok ({len(klines_data)} yerine en az 200 gerekli).")
         return None
 
     df = pd.DataFrame(klines_data)
@@ -362,7 +337,7 @@ def extract_features_for_prediction(klines_data):
     features['volatility_5'] = df['close'].rolling(window=5).std().fillna(0)
     features['volatility_10'] = df['close'].rolling(window=10).std().fillna(0)
 
-    # --- Yeni Gelişmiş Özellikler (Teknik Göstergeler) ---
+    # --- Mevcut Gelişmiş Özellikler (Teknik Göstergeler) ---
     # RSI
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -390,10 +365,35 @@ def extract_features_for_prediction(klines_data):
     features['bb_width'] = (features['bb_upper'] - features['bb_lower']) / features['bb_middle'].replace(0, 1e-9)
     features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']] = features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']].fillna(0)
 
+    # --- YENİ EKLENEN TEKNİK GÖSTERGELER (Trend, Momentum, Volatilite, Fibonacci-vari) ---
+    # EMA (Exponential Moving Averages)
+    features['ema_20'] = df['close'].ewm(span=20, adjust=False).mean().fillna(0)
+    features['ema_50'] = df['close'].ewm(span=50, adjust=False).mean().fillna(0)
+    features['ema_200'] = df['close'].ewm(span=200, adjust=False).mean().fillna(0)
+    
+    # EMA Eğimi (Slope)
+    features['ema_20_slope'] = features['ema_20'].diff().fillna(0)
+
+    # ATR (Average True Range)
+    high_low = df['high'] - df['low']
+    high_prev_close = abs(df['high'] - df['close'].shift())
+    low_prev_close = abs(df['low'] - df['close'].shift())
+    tr = pd.DataFrame({'hl': high_low, 'hpc': high_prev_close, 'lpc': low_prev_close}).max(axis=1)
+    features['atr'] = tr.rolling(window=14).mean().fillna(0)
+
+    # ROC (Rate of Change) - Momentum
+    features['roc_14'] = df['close'].pct_change(periods=14).fillna(0)
+
+    # Fiyatın N-periyot Yüksek/Düşük seviyelerine göre uzaklığı (Fibonacci-vari)
+    features['dist_from_5_high'] = (df['high'].rolling(window=5).max() - df['close']) / df['close'].replace(0, 1e-9)
+    features['dist_from_5_low'] = (df['close'] - df['low'].rolling(window=5).min()) / df['close'].replace(0, 1e-9)
+    features['dist_from_20_high'] = (df['high'].rolling(window=20).max() - df['close']) / df['close'].replace(0, 1e-9)
+    features['dist_from_20_low'] = (df['close'] - df['low'].rolling(window=20).min()) / df['close'].replace(0, 1e-9)
+    features[['dist_from_5_high', 'dist_from_5_low', 'dist_from_20_high', 'dist_from_20_low']] = features[['dist_from_5_high', 'dist_from_5_low', 'dist_from_20_high', 'dist_from_20_low']].fillna(0)
+
     final_features_df = features.iloc[-1:] 
     
     # Önemli: Özellik sütunlarını FEATURE_COLUMNS listesine göre sırala
-    # train_model.py'deki FEATURE_COLUMNS ile aynı olmalı
     final_features_df = final_features_df[FEATURE_COLUMNS]
 
     final_features_df = final_features_df.replace([np.inf, -np.inf], np.nan).fillna(0)
@@ -423,7 +423,7 @@ def piyasayi_tara_ve_analiz_et():
             print("Eğitim başarısız, AI tahmini devre dışı kalacak.")
             ai_model = None 
 
-    print(f"\n--- {current_time.strftime('%Y-%m-%d %H:%M:%S')} - Piyasa Taraması Başlandı ---")
+    print(f"\n--- {current_time.strftime('%Y-%m-%d %H:%M:%S')} - Piyasa Taraması Başladı ---")
     
     potansiyel_adaylar = []
 
@@ -440,7 +440,9 @@ def piyasayi_tara_ve_analiz_et():
             fiyat_degisim_yuzde = data["priceChangePercent"]
             klines = data["klines"]
 
-            if len(klines) < NUM_CANDLES_TO_FETCH or \
+            # Yeni eklenen göstergeler için yeterli mum verisi olduğundan emin olun
+            # En uzun periyot EMA 200, dolayısıyla en az 200 mum olmalı.
+            if len(klines) < 200 or \
                hacim_24s < MIN_HACIM_USDT or \
                abs(fiyat_degisim_yuzde) < MIN_FIYAT_DEGISIM_YUZDE:
                 continue
