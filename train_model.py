@@ -22,9 +22,10 @@ PERSISTENT_STORAGE_PATH = "/opt/render/persist"
 MODEL_PATH = os.path.join(PERSISTENT_STORAGE_PATH, 'price_direction_model.pkl')
 
 # Hedef Etiketleme Eşiği (yükseliş tanımı için)
-PRICE_CHANGE_THRESHOLD = 0.01 # %1.0'den fazla yükseliş ise 1, değilse 0
+# Burayı %1.0'den %0.75'e (0.0075) düşürdük. Modelin daha fazla pozitif örnek öğrenmesini sağlamak için.
+PRICE_CHANGE_THRESHOLD = 0.0075 # ARTIK %0.75'ten fazla yükseliş ise 1, değilse 0
 
-# Tüm özellik sütunlarının doğru ve tutarlı sırası - YENİ ÖZELLİKLER EKLENDİ!
+# Tüm özellik sütunlarının doğru ve tutarlı sırası
 FEATURE_COLUMNS = [
     'body_size', 'upper_shadow', 'lower_shadow', 'candle_range',
     'body_to_range_ratio', 'upper_shadow_to_body_ratio', 'lower_shadow_to_body_ratio',
@@ -34,13 +35,12 @@ FEATURE_COLUMNS = [
     'sma_5', 'sma_10', 'volatility_5', 'volatility_10',
     'rsi', 'macd', 'macd_signal', 'macd_hist',
     'bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width',
-    # --- YENİ EKLENEN ÖZELLİKLER ---
-    'ema_20', 'ema_50', 'ema_200', # Üstel Hareketli Ortalamalar
-    'ema_20_slope', # EMA eğimi
-    'atr', # Ortalama Gerçek Aralık (Volatilite)
-    'roc_14', # Değişim Oranı (Momentum)
-    'dist_from_5_high', 'dist_from_5_low', # Son 5 mumun zirve/diplerine göre uzaklık
-    'dist_from_20_high', 'dist_from_20_low', # Son 20 mumun zirve/diplerine göre uzaklık
+    'ema_20', 'ema_50', 'ema_200', 
+    'ema_20_slope', 
+    'atr', 
+    'roc_14', 
+    'dist_from_5_high', 'dist_from_5_low', 
+    'dist_from_20_high', 'dist_from_20_low', 
 ]
 
 # --- Veri Çekme Fonksiyonu (Geçmiş Mum Verileri İçin) ---
