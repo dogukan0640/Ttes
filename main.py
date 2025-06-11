@@ -8,8 +8,8 @@ import pickle
 from train_model import run_training_process # train_model.py'deki eğitim fonksiyonunu import ettik
 
 # --- Konfigürasyon ---
-TELEGRAM_TOKEN = "7744478523:AAEtRJar6uF7m0cxKfQh7r7TltXYxWwtmm0" # BURAYA KENDİ TELEGRAM BOT TOKEN'INIZI YAPIŞTIRIN
-CHAT_ID = "1009868232" # BURAYA KENDİ TELEGRAM KANAL VEYA SOHBET ID'NİZİ YAPIŞTIRIN
+TELEGRAM_TOKEN = "7744478523:AAEtRJar6uF7m0cxKfQh7r7TltXYxWwtmm0" 
+CHAT_ID = "1009868232" 
 
 # Analiz için eşik değerleri
 MIN_HACIM_USDT = 50_000_000  # Minimum 24s Hacim (50 Milyon USDT)
@@ -21,7 +21,6 @@ TARAMA_SIKLIGI_SANİYE = TARAMA_SIKLIGI_DAKIKA * 60
 
 # Mum grafiği zaman dilimi ve çekilecek mum sayısı
 CANDLESTICK_INTERVAL = "1h" 
-# ML tahmini ve gösterge hesaplamaları için yeterli geçmiş mum gerekli
 NUM_CANDLES_TO_FETCH = 50 
 
 # Yapay Zeka Modeli Dosyası
@@ -32,6 +31,18 @@ ai_model = None
 TRAIN_SYMBOL = "BTCUSDT" 
 TRAIN_INTERVAL = "1h"    
 TRAIN_LIMIT = 1000       
+
+# Tüm özellik sütunlarının doğru ve tutarlı sırası
+FEATURE_COLUMNS = [
+    'body_size', 'upper_shadow', 'lower_shadow', 'candle_range',
+    'body_to_range_ratio', 'upper_shadow_to_body_ratio', 'lower_shadow_to_body_ratio',
+    'high_low_ratio', 'close_to_open_ratio',
+    'volume_change_pct_1', 'volume_change_pct_3', 'volume_change_pct_5',
+    'price_change_pct_1', 'price_change_pct_3', 'price_change_pct_5',
+    'sma_5', 'sma_10', 'volatility_5', 'volatility_10',
+    'rsi', 'macd', 'macd_signal', 'macd_hist',
+    'bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width'
+]
 
 # --- Yardımcı Fonksiyonlar ---
 def telegram_sinyal_gonder(mesaj):
@@ -286,7 +297,7 @@ def extract_features_for_prediction(klines_data):
     Canlı mum verilerinden modelin beklediği özellikleri çıkarır.
     Bu fonksiyon, train_model.py'deki prepare_data_for_training ile AYNI MANTIKTA olmalı.
     """
-    if len(klines_data) < 26: # En uzun SMA/Volatilite/RSI/MACD/BB hesaplaması için en az 26 mum gerekli
+    if len(klines_data) < 26: 
         print(f"Uyarı: ML tahmini için yeterli mum verisi yok ({len(klines_data)} yerine en az 26 gerekli).")
         return None
 
@@ -297,7 +308,7 @@ def extract_features_for_prediction(klines_data):
     features['body_size'] = abs(df['close'] - df['open'])
     features['upper_shadow'] = df['high'] - df[['open', 'close']].max(axis=1)
     features['lower_shadow'] = df[['open', 'close']].min(axis=1) - df['low']
-    features['candle_range'] = df['high'] - df['low'] # <<< Bu özellik artık düşürülmeyecek
+    features['candle_range'] = df['high'] - df['low'] 
 
     features['body_to_range_ratio'] = features['body_size'] / features['candle_range'].replace(0, 1e-9)
     features['upper_shadow_to_body_ratio'] = features['upper_shadow'] / features['body_size'].replace(0, 1e-9)
@@ -347,8 +358,11 @@ def extract_features_for_prediction(klines_data):
     features['bb_width'] = (features['bb_upper'] - features['bb_lower']) / features['bb_middle'].replace(0, 1e-9)
     features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']] = features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']].fillna(0)
 
-    # final_features_df = features.iloc[-1:].drop(columns=['candle_range'], errors='ignore') # <<< BU SATIR KALDIRILDI
-    final_features_df = features.iloc[-1:] # <<< Artık candle_range düşürülmüyor
+    final_features_df = features.iloc[-1:] 
+    
+    # Önemli: Özellik sütunlarını FEATURE_COLUMNS listesine göre sırala
+    # train_model.py'deki FEATURE_COLUMNS ile aynı olmalı
+    final_features_df = final_features_df[FEATURE_COLUMNS]
 
     final_features_df = final_features_df.replace([np.inf, -np.inf], np.nan).fillna(0)
 
@@ -377,7 +391,7 @@ def piyasayi_tara_ve_analiz_et():
             print("Eğitim başarısız, AI tahmini devre dışı kalacak.")
             ai_model = None 
 
-    print(f"\n--- {current_time.strftime('%Y-%m-%d %H:%M:%S')} - Piyasa Taraması Başlandı ---")
+    print(f"\n--- {current_time.strftime('%Y-%m-%d %H:%M:%S')} - Piyasa Taraması Başladı ---")
     
     potansiyel_adaylar = []
 
@@ -386,7 +400,6 @@ def piyasayi_tara_ve_analiz_et():
         print("Piyasa verileri çekilemedi veya boş geldi, tarama atlanıyor.")
         return
 
-    # Burada döngü değişkeninin doğru olduğundan emin olalım: 'piyasa_verileri' olmalı.
     for symbol, data in piyasa_verileri.items(): 
         try:
             market_type = data["market_type"] 
@@ -408,10 +421,12 @@ def piyasayi_tara_ve_analiz_et():
                 features_for_pred = extract_features_for_prediction(klines)
                 if features_for_pred is not None and not features_for_pred.empty:
                     try:
-                        if hasattr(ai_model, 'feature_names_in_') and \
-                           not features_for_pred.columns.equals(pd.Index(ai_model.feature_names_in_)):
-                            print(f"Uyarı: Özellik sütunları uyumsuz! Sembol: {symbol}. Yeniden sıralanıyor...")
-                            features_for_pred = features_for_pred[ai_model.feature_names_in_]
+                        # Bu kontrol artık FEATURE_COLUMNS listesiyle manuel sıralama yaptığımız için daha az gerekli,
+                        # ancak yine de ekstra bir güvenlik katmanı olarak kalabilir.
+                        # if hasattr(ai_model, 'feature_names_in_') and \
+                        #    not features_for_pred.columns.equals(pd.Index(ai_model.feature_names_in_)):
+                        #     print(f"Uyarı: Özellik sütunları uyumsuz! Sembol: {symbol}. Yeniden sıralanıyor...")
+                        #     features_for_pred = features_for_pred[ai_model.feature_names_in_]
 
                         prediction = ai_model.predict(features_for_pred)[0]
                         prediction_proba = ai_model.predict_proba(features_for_pred)[0] 
