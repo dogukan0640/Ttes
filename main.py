@@ -29,9 +29,9 @@ MODEL_PATH = 'price_direction_model.pkl'
 ai_model = None 
 
 # Otomatik eğitim konfigürasyonu (Render ücretsiz planı için basitleştirildi)
-TRAIN_SYMBOL = "BTCUSDT" # AI modeli için eğitim yapılacak sembol
-TRAIN_INTERVAL = "1h"    # AI modeli için eğitim yapılacak mum aralığı
-TRAIN_LIMIT = 1000       # AI modeli eğitimi için çekilecek mum sayısı
+TRAIN_SYMBOL = "BTCUSDT" 
+TRAIN_INTERVAL = "1h"    
+TRAIN_LIMIT = 1000       
 
 # --- Yardımcı Fonksiyonlar ---
 def telegram_sinyal_gonder(mesaj):
@@ -286,7 +286,7 @@ def extract_features_for_prediction(klines_data):
     Canlı mum verilerinden modelin beklediği özellikleri çıkarır.
     Bu fonksiyon, train_model.py'deki prepare_data_for_training ile AYNI MANTIKTA olmalı.
     """
-    if len(klines_data) < 26: 
+    if len(klines_data) < 26: # En uzun SMA/Volatilite/RSI/MACD/BB hesaplaması için en az 26 mum gerekli
         print(f"Uyarı: ML tahmini için yeterli mum verisi yok ({len(klines_data)} yerine en az 26 gerekli).")
         return None
 
@@ -297,7 +297,7 @@ def extract_features_for_prediction(klines_data):
     features['body_size'] = abs(df['close'] - df['open'])
     features['upper_shadow'] = df['high'] - df[['open', 'close']].max(axis=1)
     features['lower_shadow'] = df[['open', 'close']].min(axis=1) - df['low']
-    features['candle_range'] = df['high'] - df['low']
+    features['candle_range'] = df['high'] - df['low'] # <<< Bu özellik artık düşürülmeyecek
 
     features['body_to_range_ratio'] = features['body_size'] / features['candle_range'].replace(0, 1e-9)
     features['upper_shadow_to_body_ratio'] = features['upper_shadow'] / features['body_size'].replace(0, 1e-9)
@@ -347,7 +347,8 @@ def extract_features_for_prediction(klines_data):
     features['bb_width'] = (features['bb_upper'] - features['bb_lower']) / features['bb_middle'].replace(0, 1e-9)
     features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']] = features[['bb_middle', 'bb_upper', 'bb_lower', 'bb_position', 'bb_width']].fillna(0)
 
-    final_features_df = features.iloc[-1:].drop(columns=['candle_range'], errors='ignore')
+    # final_features_df = features.iloc[-1:].drop(columns=['candle_range'], errors='ignore') # <<< BU SATIR KALDIRILDI
+    final_features_df = features.iloc[-1:] # <<< Artık candle_range düşürülmüyor
 
     final_features_df = final_features_df.replace([np.inf, -np.inf], np.nan).fillna(0)
 
@@ -357,7 +358,7 @@ def extract_features_for_prediction(klines_data):
 # --- Ana Analiz Fonksiyonu ---
 def piyasayi_tara_ve_analiz_et():
     """Binance piyasalarını tarar, yükseliş potansiyeli olan formasyonları ve ML tahminlerini bulur ve sinyal gönderir."""
-    global ai_model # ai_model değişkenini global olarak tanımladık
+    global ai_model 
 
     current_time = datetime.now()
 
@@ -365,16 +366,18 @@ def piyasayi_tara_ve_analiz_et():
     if ai_model is None:
         print("Yapay zeka modeli yüklü değil. Model eğitimi başlatılıyor...")
         telegram_sinyal_gonder(f"⏳ **Yapay Zeka Modeli Eğitiliyor/Yeniden Eğitiliyor!** ⏳\nBu işlem biraz sürebilir.")
-        if run_training_process(TRAIN_SYMBOL, TRAIN_INTERVAL, TRAIN_LIMIT):
-            # Model başarıyla eğitildiyse, global ai_model değişkenini güncelleyelim
+        
+        success = run_training_process(TRAIN_SYMBOL, TRAIN_INTERVAL, TRAIN_LIMIT) 
+        
+        if success:
             ai_model = load_ai_model(MODEL_PATH) 
             telegram_sinyal_gonder(f"✅ **Yapay Zeka Modeli Başarıyla Eğitildi ve Yüklendi!** ✅")
         else:
             telegram_sinyal_gonder(f"❌ **Yapay Zeka Modeli Eğitimi Başarısız Oldu!** ❌\nAI tahmini devre dışı kalacak.")
             print("Eğitim başarısız, AI tahmini devre dışı kalacak.")
-            ai_model = None # Hata durumunda modeli None yap
+            ai_model = None 
 
-    print(f"\n--- {current_time.strftime('%Y-%m-%d %H:%M:%S')} - Piyasa Taraması Başladı ---")
+    print(f"\n--- {current_time.strftime('%Y-%m-%d %H:%M:%S')} - Piyasa Taraması Başlandı ---")
     
     potansiyel_adaylar = []
 
@@ -383,7 +386,8 @@ def piyasayi_tara_ve_analiz_et():
         print("Piyasa verileri çekilemedi veya boş geldi, tarama atlanıyor.")
         return
 
-    for symbol, data in piyasa_verileri.items():
+    # Burada döngü değişkeninin doğru olduğundan emin olalım: 'piyasa_verileri' olmalı.
+    for symbol, data in piyasa_verileri.items(): 
         try:
             market_type = data["market_type"] 
             hacim_24s = data["quoteVolume"]
@@ -407,7 +411,6 @@ def piyasayi_tara_ve_analiz_et():
                         if hasattr(ai_model, 'feature_names_in_') and \
                            not features_for_pred.columns.equals(pd.Index(ai_model.feature_names_in_)):
                             print(f"Uyarı: Özellik sütunları uyumsuz! Sembol: {symbol}. Yeniden sıralanıyor...")
-                            # Modelin beklediği sıraya göre sütunları yeniden sırala
                             features_for_pred = features_for_pred[ai_model.feature_names_in_]
 
                         prediction = ai_model.predict(features_for_pred)[0]
@@ -513,7 +516,7 @@ if __name__ == "__main__":
     telegram_sinyal_gonder(baslangic_mesaji)
     print("Bot başlatıldı ve Telegram'a bildirim gönderildi.")
 
-    try: # Ana döngüyü try-except bloğu ile sardık
+    try: 
         while True:
             print(f"{TARAMA_SIKLIGI_DAKIKA} dakika sonraki tarama için bekleniyor...")
             time.sleep(TARAMA_SIKLIGI_SANİYE)
@@ -522,5 +525,3 @@ if __name__ == "__main__":
         critical_error_msg = f"🔥🔥🔥 **KRİTİK HATA! Bot Durdu!** 🔥🔥🔥\nLütfen Render loglarını kontrol edin.\nHata Detayı: `{type(e).__name__}: {e}`"
         telegram_sinyal_gonder(critical_error_msg)
         print(f"KRİTİK SİSTEM HATASI: {e}")
-        # Bot Render üzerinde yeniden başlatılırsa, döngü tekrar başlayacaktır.
-        # Bu satır, programın tamamen çökmesini önler ve hata bildirimini sağlar.
